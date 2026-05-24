@@ -44,6 +44,7 @@ export function getGuardLogFile(): string {
     return path.join(getProjectBase(), 'guard-log.json');
 }
 
-export function getProfileFile(): string {
-    return path.join(getProjectBase(), 'profile.json');
+export function getProfileFile(baseDir?: string): string {
+    const dir = baseDir ?? process.cwd();
+    return path.join(dir, '.tyla', 'profile.json');
 }

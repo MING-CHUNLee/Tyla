@@ -25,3 +25,6 @@ export {
 export { RubyLogGateway, SessionLogGateway } from './logging';
 export { LogMapper } from './logging';
 export type { LogEvent, SessionSummary, LogPayload } from './logging';
+
+export { TutorChatGateway } from './tutor/tutor-chat-gateway';
+export type { TutorChatResult } from './tutor/tutor-chat-gateway';

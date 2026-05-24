@@ -146,7 +146,7 @@ export function createAgentCommand(deps: AgentCliPresenterDeps): Command {
     return new Command('agent')
         .description('Run Agent to edit files based on natural language instruction')
         .argument('<instruction>', 'What the agent should do')
-        .option('-d, --directory <path>', 'Workspace directory to scan', '.')
+        .option('-d, --directory <path>', 'Workspace directory to scan', process.env['INIT_CWD'] ?? process.cwd())
         .option('--resume', 'Resume the last saved session', false)
         .option('--session <id>', 'Resume a specific session by ID')
         .option('--new', 'Force a new session (ignore last)', false)
