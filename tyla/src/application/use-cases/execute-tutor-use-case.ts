@@ -19,6 +19,7 @@ import { buildTutorModePrompt } from '../prompts/mode-agent';
 import { PolicyLoader } from '../../infrastructure/config/policy-loader';
 import { WorkflowMode } from '../../infrastructure/config/settings';
 import { IGuardAgent } from '../../domain/types/guard-agent';
+import { TutorChatGateway } from '../../infrastructure/api/tutor/tutor-chat-gateway';
 
 export type TutorStyle = WorkflowMode;
 
@@ -36,6 +37,8 @@ export interface ExecuteTutorDeps {
     policyLoader?: PolicyLoader;
     /** Optional guard agent — intercepts prompts before they reach the tutor LLM. */
     guardAgent?: IGuardAgent;
+    /** When present, delegates the full guard+tutor pipeline to the backend API. */
+    tutorChatGateway?: TutorChatGateway;
 }
 
 export interface TutorResult {
@@ -56,6 +59,11 @@ export class ExecuteTutorUseCase {
     }
 
     async execute(instruction: string, history: SessionMessage[]): Promise<TutorResult> {
+        if (this.deps.tutorChatGateway) {
+            return this.callGateway(instruction, history);
+        }
+
+        // ── Local fallback (offline / no backend) ────────────────────────────
         this.deps.emit('phase_start', { phase: 'scan', description: 'Scanning workspace for context' });
         const { projectContext, scannedFiles } = await this.buildProjectContext();
         this.deps.emit('phase_end', { phase: 'scan', success: true });
@@ -69,6 +77,52 @@ export class ExecuteTutorUseCase {
         const systemPrompt = this.assemblePrompt(history, instruction, projectContext, fileContents);
 
         return this.callLLMStream(systemPrompt, instruction, history);
+    }
+
+    private async callGateway(instruction: string, history: SessionMessage[]): Promise<TutorResult> {
+        // Backend system prompt is ~6000 tokens; keep only recent turns to stay within TPM limits
+        const MAX_GATEWAY_HISTORY = 4;
+        const trimmedHistory = history.slice(-MAX_GATEWAY_HISTORY);
+
+        this.deps.emit('phase_start', { phase: 'tutor', description: 'Calling tutor API' });
+
+        try {
+            const result = await this.deps.tutorChatGateway!.send(instruction, trimmedHistory);
+
+            if (!result.allowed) {
+                this.deps.emit('guard_blocked', { reason: result.evaluation, phase: 'guard' });
+                this.deps.emit('text_output', { content: result.refusal });
+                this.deps.emit('phase_end', { phase: 'tutor', success: true });
+                return {
+                    content: result.refusal,
+                    usage: { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 },
+                };
+            }
+
+            if (result.warning) {
+                this.deps.emit('status_update', { warning: result.warning });
+            }
+
+            this.deps.emit('text_output', { content: result.content });
+            this.deps.emit('phase_end', { phase: 'tutor', success: true });
+
+            return {
+                content: result.content,
+                usage: {
+                    inputTokens:        result.usage.inputTokens,
+                    outputTokens:       result.usage.outputTokens,
+                    cacheCreationTokens: 0,
+                    cacheReadTokens:    0,
+                },
+            };
+        } catch (error) {
+            this.deps.emit('phase_end', { phase: 'tutor', success: false });
+            this.deps.emit('error', {
+                message: error instanceof Error ? error.message : String(error),
+                phase: 'tutor',
+            });
+            throw error;
+        }
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────

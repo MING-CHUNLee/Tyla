@@ -36,13 +36,14 @@ export class GuardCheckGateway implements IGuardAgent {
     constructor(
         private readonly onJudgeError?: (message: string) => void,
         private readonly onLog?: (entry: GuardLogEntry) => void,
+        private readonly directory?: string,
     ) {
         this.baseUrl = `http://${TYLA_API.HOST}:${TYLA_API.PORT}`;
         this.timeout = TYLA_API.DEFAULT_TIMEOUT_MS;
     }
 
     async check(userPrompt: string, _policyText: string, _style: TutorStyle): Promise<GuardResult> {
-        const profile  = getProfile();
+        const profile  = getProfile(this.directory);
         const provider = detectProvider();
 
         if (!profile) {

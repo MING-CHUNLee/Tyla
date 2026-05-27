@@ -13,9 +13,9 @@ export interface UserProfile {
     projectId: string;
 }
 
-export function getProfile(): UserProfile | null {
+export function getProfile(baseDir?: string): UserProfile | null {
     try {
-        const raw = fs.readFileSync(getProfileFile(), 'utf-8');
+        const raw = fs.readFileSync(getProfileFile(baseDir), 'utf-8');
         const parsed = JSON.parse(raw);
         if (
             typeof parsed?.studentId === 'string' &&

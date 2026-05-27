@@ -50,7 +50,7 @@ function resolveAssignmentDir(value: string): string {
         // eslint-disable-next-line @typescript-eslint/no-implied-eval
         const load = new Function('p', 'return import(p)') as (p: string) => Promise<{ startTUI: (cfg?: { directory: string; assignmentDir?: string; tutorMode?: boolean }) => Promise<void> }>;
         const { startTUI } = await load('./tui/index.js');
-        await startTUI({ directory: process.cwd(), assignmentDir, tutorMode: hasTutor });
+        await startTUI({ directory: process.env['INIT_CWD'] ?? process.cwd(), assignmentDir, tutorMode: hasTutor });
     } else {
         const { startCLI } = await import('./cli/index');
         await startCLI();

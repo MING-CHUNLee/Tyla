@@ -38,7 +38,7 @@ export function createAskCommand(deps: AskCliAdapterDeps): Command {
     return new Command('ask')
         .description('Ask a question about the codebase without modifying any files')
         .argument('<question>', 'The question you want to ask')
-        .option('-d, --directory <path>', 'Workspace directory to scan', '.')
+        .option('-d, --directory <path>', 'Workspace directory to scan', process.env['INIT_CWD'] ?? process.cwd())
         .option('--resume', 'Resume the last saved session', false)
         .option('--session <id>', 'Resume a specific session by ID')
         .option('--new', 'Force a new session (ignore last)', false)
