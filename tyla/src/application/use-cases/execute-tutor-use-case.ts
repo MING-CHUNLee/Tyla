@@ -80,14 +80,10 @@ export class ExecuteTutorUseCase {
     }
 
     private async callGateway(instruction: string, history: SessionMessage[]): Promise<TutorResult> {
-        // Backend system prompt is ~6000 tokens; keep only recent turns to stay within TPM limits
-        const MAX_GATEWAY_HISTORY = 4;
-        const trimmedHistory = history.slice(-MAX_GATEWAY_HISTORY);
-
         this.deps.emit('phase_start', { phase: 'tutor', description: 'Calling tutor API' });
 
         try {
-            const result = await this.deps.tutorChatGateway!.send(instruction, trimmedHistory);
+            const result = await this.deps.tutorChatGateway!.send(instruction, history);
 
             if (!result.allowed) {
                 this.deps.emit('guard_blocked', { reason: result.evaluation, phase: 'guard' });
