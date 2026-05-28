@@ -8,20 +8,16 @@ import { TYLA_API } from '../../config/constants';
 
 interface TutorChatResponse {
     log_id: number;
-    allowed: boolean;
-    content?: string;
-    usage?: { input_tokens: number; output_tokens: number };
-    refusal?: string;
-    attack_probability?: number;
-    evaluation?: string;
-    warning?: string;
+    status: 'done' | 'forbidden' | 'unavailable';
+    content: string;
+    usage: { input_tokens: number; output_tokens: number } | null;
 }
 
 // ── Domain result ─────────────────────────────────────────────────────────────
 
 export type TutorChatResult =
-    | { allowed: true;  logId: number; content: string; usage: { inputTokens: number; outputTokens: number }; warning?: string }
-    | { allowed: false; logId: number; refusal: string; attackProbability: number; evaluation: string };
+    | { status: 'done' | 'unavailable'; logId: number; content: string; usage: { inputTokens: number; outputTokens: number }; guardSkipped: boolean }
+    | { status: 'forbidden'; logId: number; content: string };
 
 // ── Gateway ───────────────────────────────────────────────────────────────────
 
@@ -76,29 +72,28 @@ export class TutorChatGateway {
 
         const data = response.data;
 
-        if (!data.allowed) {
+        if (data.status === 'forbidden') {
             return {
-                allowed:           false,
-                logId:             data.log_id,
-                refusal:           data.refusal ?? data.evaluation ?? 'Request blocked.',
-                attackProbability: data.attack_probability ?? 1,
-                evaluation:        data.evaluation ?? '',
+                status:  'forbidden',
+                logId:   data.log_id,
+                content: data.content,
             };
         }
 
-        if (response.status === 202) {
-            this.onWarning?.(`guard skipped: ${data.warning ?? 'llm unavailable'}`);
+        const guardSkipped = data.status === 'unavailable';
+        if (guardSkipped) {
+            this.onWarning?.('guard skipped: llm unavailable');
         }
 
         return {
-            allowed: true,
-            logId:   data.log_id,
-            content: data.content ?? '',
+            status:      data.status,
+            logId:       data.log_id,
+            content:     data.content,
+            guardSkipped,
             usage: {
                 inputTokens:  data.usage?.input_tokens  ?? 0,
                 outputTokens: data.usage?.output_tokens ?? 0,
             },
-            ...(data.warning ? { warning: data.warning } : {}),
         };
     }
 }

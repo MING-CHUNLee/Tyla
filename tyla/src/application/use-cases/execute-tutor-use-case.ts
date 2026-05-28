@@ -85,18 +85,18 @@ export class ExecuteTutorUseCase {
         try {
             const result = await this.deps.tutorChatGateway!.send(instruction, history);
 
-            if (!result.allowed) {
-                this.deps.emit('guard_blocked', { reason: result.evaluation, phase: 'guard' });
-                this.deps.emit('text_output', { content: result.refusal });
+            if (result.status === 'forbidden') {
+                this.deps.emit('guard_blocked', { phase: 'guard' });
+                this.deps.emit('text_output', { content: result.content });
                 this.deps.emit('phase_end', { phase: 'tutor', success: true });
                 return {
-                    content: result.refusal,
+                    content: result.content,
                     usage: { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 },
                 };
             }
 
-            if (result.warning) {
-                this.deps.emit('status_update', { warning: result.warning });
+            if (result.guardSkipped) {
+                this.deps.emit('status_update', { warning: 'guard skipped: llm unavailable' });
             }
 
             this.deps.emit('text_output', { content: result.content });
