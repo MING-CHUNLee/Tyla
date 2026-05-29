@@ -43,7 +43,7 @@ const Logo: React.FC = () => {
             ))}
             <Box marginTop={1}>
                 <Text color="green" dimColor>
-                    [ Tyla — R-aware AI coding assistant ]
+                    [ Tyla — AI coding assistant ]
                 </Text>
             </Box>
         </Box>
