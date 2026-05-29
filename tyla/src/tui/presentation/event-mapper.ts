@@ -130,18 +130,18 @@ export function mapAgentEventToMessage(event: AgentEvent): MappedEvent {
             return { message: makeMessage('status', `Rejected: ${event.data.path}`) };
 
         case 'turn_saved': {
-            const d = event.data as {
-                turnCount: number; model: string;
-                usagePercent: number; health: string; totalCostUSD: number;
-            };
+            const d = event.data;
             return {
                 sideEffect: {
                     statusData: {
-                        turnCount:    d.turnCount,
-                        model:        d.model,
-                        usagePercent: d.usagePercent,
-                        health:       d.health as ContextHealthVM,
-                        totalCostUSD: d.totalCostUSD,
+                        turnCount:          d.turnCount,
+                        model:              d.model,
+                        usagePercent:       d.usagePercent,
+                        health:             d.health as ContextHealthVM,
+                        totalCostUSD:       d.totalCostUSD,
+                        lastInputTokens:    d.lastInputTokens,
+                        lastOutputTokens:   d.lastOutputTokens,
+                        lastResponseTimeMs: d.lastResponseTimeMs,
                     } satisfies StatusBarVM,
                 },
             };

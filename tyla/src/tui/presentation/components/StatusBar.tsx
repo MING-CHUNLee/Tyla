@@ -52,6 +52,9 @@ const StatusBar: React.FC<StatusBarProps> = ({ vm, config }) => {
             ? <Text dimColor>{vm.lastTokensPerSecond} tok/s</Text> : null,
         latency: () => vm.lastResponseTimeMs !== undefined
             ? <Text dimColor>{formatDuration(vm.lastResponseTimeMs)}</Text> : null,
+        tokens: () => (vm.lastInputTokens !== undefined && vm.lastInputTokens > 0)
+            ? <Text dimColor>{vm.lastInputTokens.toLocaleString()} in / {(vm.lastOutputTokens ?? 0).toLocaleString()} out</Text>
+            : null,
     };
 
     const parts: React.ReactNode[] = [];

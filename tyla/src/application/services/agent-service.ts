@@ -47,7 +47,17 @@ export type AgentEvent =
     | { type: 'diff_proposed';     data: { path: string; diff: string; original: string; proposed: string } }
     | { type: 'edit_applied';      data: { path: string } }
     | { type: 'edit_rejected';     data: { path: string } }
-    | { type: 'turn_saved';        data: { turnCount: number; usage: unknown; sessionId: string; model: string; usagePercent: number; health: string; totalCostUSD: number } }
+    | { type: 'turn_saved';        data: {
+        turnCount:           number;
+        sessionId:           string;
+        model:               string;
+        usagePercent:        number;
+        health:              string;
+        totalCostUSD:        number;
+        lastInputTokens:     number;
+        lastOutputTokens:    number;
+        lastResponseTimeMs?: number;
+    } }
     | { type: 'error';             data: { message: string; phase?: string } }
     | { type: 'status_update';     data: { plugins?: string[]; warning?: string; knowledge?: string[] } }
     | { type: 'tool_result_scan';     data: { data: unknown } }
@@ -365,13 +375,15 @@ export class AgentService {
     private emitTurnSaved(usage: TurnUsage): void {
         const budget = this.session.tokenBudget;
         this.emit({ type: 'turn_saved', data: {
-            turnCount: this.session.turnCount,
-            usage,
-            sessionId: this.session.id,
-            model: this.session.model,
-            usagePercent: budget.usagePercent,
-            health: budget.health,
-            totalCostUSD: this.session.totalCostUSD,
+            turnCount:          this.session.turnCount,
+            sessionId:          this.session.id,
+            model:              this.session.model,
+            usagePercent:       budget.usagePercent,
+            health:             budget.health,
+            totalCostUSD:       this.session.totalCostUSD,
+            lastInputTokens:    usage.inputTokens,
+            lastOutputTokens:   usage.outputTokens,
+            lastResponseTimeMs: usage.responseTimeMs,
         } });
     }
 

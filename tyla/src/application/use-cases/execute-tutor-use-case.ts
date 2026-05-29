@@ -86,12 +86,12 @@ export class ExecuteTutorUseCase {
             const result = await this.deps.tutorChatGateway!.send(instruction, history);
 
             if (result.status === 'forbidden') {
-                this.deps.emit('guard_blocked', { phase: 'guard' });
+                this.deps.emit('guard_blocked', { reason: 'content_policy', phase: 'guard' });
                 this.deps.emit('text_output', { content: result.content });
                 this.deps.emit('phase_end', { phase: 'tutor', success: true });
                 return {
                     content: result.content,
-                    usage: { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 },
+                    usage: { inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens, cacheCreationTokens: 0, cacheReadTokens: 0 },
                 };
             }
 

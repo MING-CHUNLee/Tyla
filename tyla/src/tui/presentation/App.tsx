@@ -27,7 +27,7 @@ export interface AppViewProps {
 }
 
 const DEFAULT_STATUS_CONFIG: StatusBarDisplayConfig = {
-    items: ['model', 'context', 'turn', 'cost'],
+    items: ['model', 'context', 'turn', 'tokens'],
 };
 
 const AppView: React.FC<AppViewProps> = ({

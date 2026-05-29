@@ -92,6 +92,8 @@ export interface StatusBarVM {
     lastTokensPerSecond?: number;
     lastResponseTimeMs?: number;
     elapsedMs?: number;
+    lastInputTokens?:  number;
+    lastOutputTokens?: number;
 }
 
 export interface StatusBarDisplayConfig {
@@ -108,4 +110,5 @@ export type StatusBarItemKey =
     | 'turn'
     | 'duration'
     | 'tps'
-    | 'latency';
+    | 'latency'
+    | 'tokens';

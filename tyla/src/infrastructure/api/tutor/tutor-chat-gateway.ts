@@ -17,7 +17,16 @@ interface TutorChatResponse {
 
 export type TutorChatResult =
     | { status: 'done' | 'unavailable'; logId: number; content: string; usage: { inputTokens: number; outputTokens: number }; guardSkipped: boolean }
-    | { status: 'forbidden'; logId: number; content: string };
+    | { status: 'forbidden';            logId: number; content: string; usage: { inputTokens: number; outputTokens: number } };
+
+// Returns validated non-negative integers; falls back to 0 on invalid.
+function parseUsage(raw: { input_tokens: number; output_tokens: number } | null | undefined)
+    : { inputTokens: number; outputTokens: number } {
+    const MAX = 1_000_000;
+    const safe = (n: unknown): number =>
+        typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= MAX ? n : 0;
+    return { inputTokens: safe(raw?.input_tokens), outputTokens: safe(raw?.output_tokens) };
+}
 
 // ── Gateway ───────────────────────────────────────────────────────────────────
 
@@ -77,6 +86,7 @@ export class TutorChatGateway {
                 status:  'forbidden',
                 logId:   data.log_id,
                 content: data.content,
+                usage:   parseUsage(data.usage),
             };
         }
 
@@ -90,10 +100,7 @@ export class TutorChatGateway {
             logId:       data.log_id,
             content:     data.content,
             guardSkipped,
-            usage: {
-                inputTokens:  data.usage?.input_tokens  ?? 0,
-                outputTokens: data.usage?.output_tokens ?? 0,
-            },
+            usage: parseUsage(data.usage),
         };
     }
 }
