@@ -77,9 +77,10 @@ sequenceDiagram
     U->>AS: tutor instruction
     AS->>UC: execute(instruction, history)
     UC->>GW: send(prompt, history)
-    GW->>BE: POST /api/v1/tutor_chats<br/>{ prompt, history, X-LLM-Key }
+    GW->>BE: POST /api/v1/tutor_chats
+    Note right of GW: body: prompt, history, X-LLM-Key
     BE->>LLM: structured output request
-    LLM-->>BE: { text, <actions>[...] }
+    LLM-->>BE: { text, actions: [...] }
     BE-->>GW: { content, actions[], status, usage }
     GW-->>UC: TutorChatResult { content, actions[] }
 
