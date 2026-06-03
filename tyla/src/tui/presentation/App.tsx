@@ -8,7 +8,7 @@ import InstallReview from './components/InstallReview.js';
 import StatusBar from './components/StatusBar.js';
 import ThinkingIndicator from './components/ThinkingIndicator.js';
 import StreamingMessage from './components/StreamingMessage.js';
-import { TUIMessage, AppState, PendingEdit, PendingInstall } from './types.js';
+import { TUIMessage, AppState, PendingApproval } from './types.js';
 import { StatusBarVM, StatusBarDisplayConfig } from '../../shared/view-models/index.js';
 
 export interface AppViewProps {
@@ -17,8 +17,7 @@ export interface AppViewProps {
     onInputChange: (value: string) => void;
     onSubmit: (value: string) => void;
     appState: AppState;
-    pendingReview: PendingEdit | null;
-    pendingInstall: PendingInstall | null;
+    pendingApproval: PendingApproval | null;
     onReviewDecision: (approved: boolean) => void;
     isStreaming: boolean;
     streamingContent: string;
@@ -35,8 +34,7 @@ const AppView: React.FC<AppViewProps> = ({
     onInputChange,
     onSubmit,
     appState,
-    pendingReview,
-    pendingInstall,
+    pendingApproval,
     onReviewDecision,
     isStreaming,
     streamingContent,
@@ -57,16 +55,28 @@ const AppView: React.FC<AppViewProps> = ({
                     <ThinkingIndicator />
                 )}
 
-                {appState === 'reviewing' && pendingReview && (
+                {appState === 'reviewing' && pendingApproval?.kind === 'edit' && (
                     <DiffReview
-                        edit={pendingReview}
+                        edit={pendingApproval.edit}
                         onDecision={onReviewDecision}
                     />
                 )}
 
-                {appState === 'reviewing' && pendingInstall && !pendingReview && (
+                {appState === 'reviewing' && pendingApproval?.kind === 'script' && (
+                    <DiffReview
+                        edit={{
+                            path: '(r script)',
+                            diff: pendingApproval.script.code,
+                            original: '',
+                            proposed: pendingApproval.script.code,
+                        }}
+                        onDecision={onReviewDecision}
+                    />
+                )}
+
+                {appState === 'reviewing' && pendingApproval?.kind === 'install' && (
                     <InstallReview
-                        plan={pendingInstall}
+                        plan={pendingApproval.install}
                         onDecision={onReviewDecision}
                     />
                 )}

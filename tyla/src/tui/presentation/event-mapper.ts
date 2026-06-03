@@ -14,7 +14,7 @@
  * without rendering any React components.
  */
 
-import { TUIMessage, AppState, PendingInstall } from './types';
+import { TUIMessage, AppState, PendingInstall, PendingApproval } from './types';
 import {
     StatusBarVM, ContextHealthVM,
     ScanResultVM, LibraryScanResultVM,
@@ -31,8 +31,7 @@ export type { AgentEvent, ProposedEdit };
  * Returned alongside the message so App.tsx can apply them.
  */
 export interface EventSideEffect {
-    pendingReview?: ProposedEdit;
-    pendingInstall?: PendingInstall;
+    pendingApproval?: PendingApproval;
     nextAppState?: AppState;
     streamingToken?: string;
     finalizeStream?: boolean;
@@ -112,16 +111,30 @@ export function mapAgentEventToMessage(event: AgentEvent): MappedEvent {
             const edit = event.data as unknown as ProposedEdit;
             return {
                 sideEffect: {
-                    pendingReview: {
-                        path:     edit.path,
-                        diff:     edit.diff,
-                        original: edit.original,
-                        proposed: edit.proposed,
+                    pendingApproval: {
+                        kind: 'edit',
+                        edit: {
+                            path:     edit.path,
+                            diff:     edit.diff,
+                            original: edit.original,
+                            proposed: edit.proposed,
+                        },
                     },
                     nextAppState: 'reviewing',
                 },
             };
         }
+
+        case 'script_proposed':
+            return {
+                sideEffect: {
+                    pendingApproval: { kind: 'script', script: { code: event.data.code as string } },
+                    nextAppState: 'reviewing',
+                },
+            };
+
+        case 'script_rejected':
+            return { message: makeMessage('status', 'Skipped script') };
 
         case 'edit_applied':
             return { message: makeMessage('status', `Applied: ${event.data.path}`) };
@@ -150,6 +163,7 @@ export function mapAgentEventToMessage(event: AgentEvent): MappedEvent {
         case 'status_update': {
             const parts: string[] = [];
             if (event.data.warning)   parts.push(`⚠ ${event.data.warning}`);
+            if (event.data.info)      parts.push(event.data.info as string);   // readFallbackFiles auto-load notice
             if (event.data.plugins)   parts.push(`Plugins: ${event.data.plugins.join(', ')}`);
             if (event.data.knowledge) parts.push(`Knowledge: ${event.data.knowledge.join(', ')}`);
             if (parts.length === 0)   return {};
@@ -219,11 +233,14 @@ export function mapAgentEventToMessage(event: AgentEvent): MappedEvent {
             const d = event.data as unknown as PendingInstall;
             return {
                 sideEffect: {
-                    pendingInstall: {
-                        toInstall:        d.toInstall,
-                        alreadyInstalled: d.alreadyInstalled,
-                        blocked:          d.blocked,
-                        warnings:         d.warnings,
+                    pendingApproval: {
+                        kind: 'install',
+                        install: {
+                            toInstall:        d.toInstall,
+                            alreadyInstalled: d.alreadyInstalled,
+                            blocked:          d.blocked,
+                            warnings:         d.warnings,
+                        },
                     },
                     nextAppState: 'reviewing',
                 },

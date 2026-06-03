@@ -70,6 +70,16 @@ export interface PendingInstall {
     warnings: Array<{ name: string; message: string }>;
 }
 
+/**
+ * One human-in-the-loop approval, discriminated by kind. Replaces the two parallel
+ * `pendingReview` / `pendingInstall` slots — `script` (execute_script) is the third
+ * variant the tutor dispatch needs, and a future `load_file` approval inherits it for free.
+ */
+export type PendingApproval =
+    | { kind: 'edit';    edit: PendingEdit }
+    | { kind: 'install'; install: PendingInstall }
+    | { kind: 'script';  script: { code: string } };
+
 export interface TUIConfig {
     directory: string;
     sessionId?: string;

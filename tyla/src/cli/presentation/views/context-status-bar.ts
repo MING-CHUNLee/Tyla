@@ -59,6 +59,11 @@ const RENDERERS: Record<StatusBarItemKey, ItemRenderer> = {
         vm.lastResponseTimeMs !== undefined
             ? chalk.dim(formatDuration(vm.lastResponseTimeMs))
             : undefined,
+
+    tokens: (vm) =>
+        vm.lastInputTokens !== undefined && vm.lastInputTokens > 0
+            ? chalk.dim(`${vm.lastInputTokens.toLocaleString()} in / ${(vm.lastOutputTokens ?? 0).toLocaleString()} out`)
+            : undefined,
 };
 
 // ─── Pure Formatters ───────────────────────────────────────────────────────

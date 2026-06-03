@@ -3,7 +3,7 @@ import path from 'path';
 import { useInput, useApp } from 'ink';
 
 import AppView from '../presentation/App.js';
-import { TUIMessage, AppState, PendingEdit, PendingInstall, TUIConfig } from '../presentation/types.js';
+import { TUIMessage, AppState, PendingApproval, TUIConfig } from '../presentation/types.js';
 import { mapAgentEventToMessage, AgentEvent, ProposedEdit, nextId } from '../presentation/event-mapper.js';
 import { StatusBarVM } from '../../shared/view-models/index.js';
 import type { ProposedInstall } from '../../application/services/agent-service.js';
@@ -32,8 +32,7 @@ const AppController: React.FC<AppControllerProps> = ({ config }) => {
     ]);
     const [input, setInput] = useState('');
     const [appState, setAppState] = useState<AppState>('idle');
-    const [pendingReview, setPendingReview] = useState<PendingEdit | null>(null);
-    const [pendingInstall, setPendingInstall] = useState<PendingInstall | null>(null);
+    const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
     const [streamingContent, setStreamingContent] = useState('');
     const [isStreaming, setIsStreaming] = useState(false);
     const [statusData, setStatusData] = useState<StatusBarVM | null>(null);
@@ -66,12 +65,8 @@ const AppController: React.FC<AppControllerProps> = ({ config }) => {
                 setIsStreaming(true);
                 setStreamingContent(prev => prev + sideEffect.streamingToken);
             }
-            if (sideEffect.pendingReview) {
-                setPendingReview(sideEffect.pendingReview);
-                setAppState('reviewing');
-            }
-            if (sideEffect.pendingInstall) {
-                setPendingInstall(sideEffect.pendingInstall);
+            if (sideEffect.pendingApproval) {
+                setPendingApproval(sideEffect.pendingApproval);
                 setAppState('reviewing');
             }
             if (sideEffect.nextAppState && sideEffect.nextAppState !== 'reviewing') {
@@ -100,8 +95,7 @@ const AppController: React.FC<AppControllerProps> = ({ config }) => {
     const handleReviewDecision = useCallback((approved: boolean) => {
         approvalResolverRef.current?.(approved);
         approvalResolverRef.current = null;
-        setPendingReview(null);
-        setPendingInstall(null);
+        setPendingApproval(null);
         setAppState('processing');
     }, []);
 
@@ -194,8 +188,7 @@ const AppController: React.FC<AppControllerProps> = ({ config }) => {
             onInputChange={setInput}
             onSubmit={handleSubmit}
             appState={appState}
-            pendingReview={pendingReview}
-            pendingInstall={pendingInstall}
+            pendingApproval={pendingApproval}
             onReviewDecision={handleReviewDecision}
             isStreaming={isStreaming}
             streamingContent={streamingContent}
