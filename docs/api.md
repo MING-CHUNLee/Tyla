@@ -1,319 +1,218 @@
-# Tyla RStudio CLI — Backend API Reference
+# Tyla CLI ↔ Tyla-api — Frontend Integration Reference
 
-## Overview
-
-The Ruby backend API is a lightweight HTTP server that bridges the TypeScript CLI and the Google Gemini LLM.
-It exposes two domain endpoints that implement the two-phase agentic editing pipeline:
-
-```
-CLI (TypeScript)
-    │
-    ├─ POST /resolve ──► ResolveService ──► GeminiApi ──► Gemini
-    │                    (which files?)                   (picks files)
-    │
-    └─ POST /edit ─────► EditService ────► GeminiApi ──► Gemini
-                         (how to change?)                (edits code)
-```
-
-**Stack:** Ruby 3.2+ · Roda · Puma · Faraday · Google Gemini API
+> **Scope:** how the MindyCLI TUI (frontend) talks to the Tyla-api backend. This is the
+> **frontend's view** of the contract; the canonical, field-level endpoint specs live in
+> the backend repo and are linked per endpoint. Where the two disagree, the backend docs win.
+>
+> **Status (2026-06-03):** the live pipeline is **`guard_checks` → `tutor_chats`**. The
+> agentic additions — `file_context` (request) and `actions[]` (response) — are the
+> **target** from [`plans/2026-06-03-agentic-tutor-react-pipeline.md`](../plans/2026-06-03-agentic-tutor-react-pipeline.md)
+> (frontend) and `Tyla-api/plans/2026-06-03-agentic-tutor-backend.md` (backend). Parts not
+> yet shipped are marked **TARGET**.
+>
+> **Superseded:** the previous `/resolve` + `/edit` Gemini pipeline (port 9090) is retired.
+> The backend is now a guard + tutor service; see the git history of this file for the old contract.
 
 ---
 
-## Base URL
+## 1. Overview — the agentic tutor pipeline
 
-```
-http://localhost:9090
-```
+A single student turn flows through **two backend endpoints** plus a frontend-side
+action-dispatch step. The tutor can now *propose actions* (edit a file, run a script),
+but **every file change passes through diff → preview → human approval → write**. The LLM
+never writes to disk directly.
 
-Configurable via `API_HOST` and `API_PORT` environment variables.
+```mermaid
+sequenceDiagram
+    participant U as Student TUI
+    participant UC as ExecuteTutorUseCase
+    participant GC as guard_checks API
+    participant TC as tutor_chats API
+    participant FS as Local FS / Tools
 
----
-
-## Starting the Server
-
-```bash
-# Install dependencies (first time only)
-bundle install
-
-# Start (development)
-rake run:dev
-
-# Start (production)
-rake run
-```
-
----
-
-## Authentication
-
-No authentication is required for local development. The server listens on `localhost` only and uses CORS to restrict cross-origin access.
-
-The server itself authenticates to Gemini using `GEMINI_API_KEY` loaded from `cli/.env` or a root-level `.env` file.
-
----
-
-## Endpoints
-
-### `GET /`
-
-Health check. Confirms the server is running.
-
-**Request**
-
-```
-GET http://localhost:9090/
-```
-
-**Response `200 OK`**
-
-```json
-{
-  "status": "ok",
-  "message": "Tyla RStudio CLI API",
-  "version": "1.0.0"
-}
+    U->>UC: tutor prompt
+    UC->>UC: buildFileContext  scan + read relevant files
+    UC->>GC: POST guard_checks  prompt
+    alt status forbidden
+        GC-->>UC: refusal
+        UC->>U: show refusal, end turn
+    else status done or unavailable
+        GC-->>UC: status, guard_log_id
+        UC->>TC: POST tutor_chats  prompt + file_context + history + guard_log_id
+        TC-->>UC: content + actions + usage
+        UC->>U: render content
+        loop each action
+            alt edit_file
+                UC->>FS: read original, applyPatches, diff
+                UC->>U: diff_proposed  preview
+                U-->>UC: approve or reject
+                UC->>FS: write only if approved
+            else execute_script
+                UC->>U: script_proposed  preview
+                U-->>UC: approve or reject
+                UC->>FS: r_exec read-only, only if approved
+            else load_file
+                UC->>FS: file_read into context
+            end
+        end
+        UC->>UC: persist turn
+    end
 ```
 
 ---
 
-### `POST /resolve`
-
-**Phase 1 of the agentic pipeline.**
-
-Given a natural language instruction and a list of R files with short previews, asks Gemini which files are relevant and need to be modified.
-
-The CLI sends only file names and the first ~10 lines of each file — not the full content — so this call is fast and token-efficient.
-
-**Request**
+## 2. Base URL & configuration
 
 ```
-POST http://localhost:9090/resolve
-Content-Type: application/json
+http://<TYLA_API.HOST>:<TYLA_API.PORT>      # e.g. http://localhost:9292
 ```
 
-| Field         | Type            | Required | Description                                      |
-|---------------|-----------------|----------|--------------------------------------------------|
-| `instruction` | `string`        | ✅       | Natural language description of the desired change |
-| `files`       | `array<object>` | ✅       | List of workspace files with previews            |
-| `files[].path`    | `string`    | ✅       | Relative file path (e.g. `"src/load_data.R"`)   |
-| `files[].preview` | `string`    | ✅       | First ~10 lines of the file                     |
-
-**Request body example**
-
-```json
-{
-  "instruction": "Add error handling to all data loading functions",
-  "files": [
-    {
-      "path": "src/load_data.R",
-      "preview": "# Load raw survey data\nload_survey <- function(path) {\n  read.csv(path)\n}\n"
-    },
-    {
-      "path": "analysis/model.R",
-      "preview": "# Fit linear model\nfit_model <- function(df) {\n  lm(y ~ x, data = df)\n}\n"
-    },
-    {
-      "path": "report.Rmd",
-      "preview": "---\ntitle: 'Report'\noutput: html_document\n---\n"
-    }
-  ]
-}
-```
-
-**Response `200 OK`**
-
-```json
-{
-  "target_files": ["src/load_data.R"]
-}
-```
-
-| Field          | Type            | Description                                          |
-|----------------|-----------------|------------------------------------------------------|
-| `target_files` | `array<string>` | Paths of files the LLM identified as needing changes |
-
-**Response — no relevant files**
-
-```json
-{
-  "target_files": []
-}
-```
-
-**Error responses**
-
-| Status | Body                                    | Cause                          |
-|--------|-----------------------------------------|--------------------------------|
-| `400`  | `{"error": "instruction is required"}`  | `instruction` field is missing or empty |
-| `500`  | `{"error": "<error message>"}`          | Gemini API failure or server error |
+Host/port come from the `TYLA_API` config constant
+([cli config constants](../tyla/src/infrastructure/config/constants.ts)). The gateways
+build the base URL from it; there is no separate per-endpoint host.
 
 ---
 
-### `POST /edit`
+## 3. Authentication headers
 
-**Phase 2 of the agentic pipeline.**
+Both endpoints take the **same four LLM headers**. The user supplies their own LLM
+credentials; the backend forwards them to the provider for that one request and never
+stores them.
 
-Sends the full content of a single file plus the instruction to Gemini, and returns the complete modified file as a string.
+| Header | Required | Description |
+|--------|----------|-------------|
+| `X-LLM-Key` | Required | API key (OpenAI key, Anthropic key, or GitHub PAT). Missing → `403`. |
+| `X-LLM-Provider` | Optional | `openai` (default) or `anthropic`. |
+| `X-LLM-Model` | Optional | Model id; falls back to `LLM_MODEL` env, then a server default. |
+| `X-LLM-Endpoint` | Optional | Override base URL (e.g. GitHub Models). |
 
-**Request**
-
-```
-POST http://localhost:9090/edit
-Content-Type: application/json
-```
-
-| Field         | Type     | Required | Description                                        |
-|---------------|----------|----------|----------------------------------------------------|
-| `file_path`   | `string` | ✅       | Relative file path (used as context for the LLM)  |
-| `content`     | `string` | ✅       | Complete original file content (can be empty `""`) |
-| `instruction` | `string` | ✅       | Natural language description of the desired change |
-
-**Request body example**
-
-```json
-{
-  "file_path": "src/load_data.R",
-  "content": "load_survey <- function(path) {\n  read.csv(path)\n}\n",
-  "instruction": "Add tryCatch error handling to all functions"
-}
-```
-
-**Response `200 OK`**
-
-```json
-{
-  "modified_content": "load_survey <- function(path) {\n  tryCatch(\n    read.csv(path),\n    error = function(e) {\n      stop(paste('Failed to load survey data:', e$message))\n    }\n  )\n}\n"
-}
-```
-
-| Field             | Type     | Description                               |
-|-------------------|----------|-------------------------------------------|
-| `modified_content` | `string` | Complete modified file content (plain R code, no markdown fences) |
-
-**Error responses**
-
-| Status | Body                                                          | Cause                                        |
-|--------|---------------------------------------------------------------|----------------------------------------------|
-| `400`  | `{"error": "file_path and instruction are required"}`         | One or more required fields are missing      |
-| `500`  | `{"error": "<error message>"}`                                | Gemini API failure or server error           |
+The frontend resolves these from `.env` via the config layer and attaches them in both
+gateways.
 
 ---
 
-## Full Request/Response Flow
+## 4. Unified `status` enum
 
-```
-User runs:
-  Tyla-cli edit "Add error handling to data loading functions"
+Both endpoints branch on a body `status` field (the HTTP code is a second, independent
+layer — key off `status`):
 
-Step 1 — FileResolver (CLI)
-  Globs *.R / *.Rmd files in workspace
-  Reads first 10 lines of each file
-        ↓
-Step 2 — POST /resolve
-  Sends: { instruction, files:[{path, preview}, ...] }
-  Returns: { target_files: ["src/load_data.R"] }
-        ↓
-Step 3 — POST /edit  (once per resolved file)
-  Sends: { file_path, content, instruction }
-  Returns: { modified_content: "..." }
-        ↓
-Step 4 — DiffEngine (CLI)
-  Shows red/green diff in terminal
-  Prompts: "Apply changes? [y/N]"
-        ↓
-Step 5 — Write (CLI)
-  Writes modified_content to disk if confirmed
+```ts
+type ApiStatus = 'done' | 'forbidden' | 'error' | 'unavailable';
 ```
+
+| `status` | Meaning | Frontend behaviour |
+|----------|---------|--------------------|
+| `done` | guard passed / tutor replied | proceed / render |
+| `forbidden` | guard blocked | show `refusal` (guard) / `content` (tutor); end turn |
+| `unavailable` | guard LLM failed — fail-open | proceed; log warning |
+| `error` | transport/validation/upstream failure (4xx/5xx) | show error; suggest retry |
+
+`error` is the frontend's bucket for any non-2xx or unparseable body; on the wire those
+use the shared error envelope `{ status, message, errors }`.
 
 ---
 
-## Environment Variables
+## 5. Endpoint 1 — `POST /api/v1/guard_checks` (pre-call)
 
-| Variable        | Required | Default             | Description                         |
-|-----------------|----------|---------------------|-------------------------------------|
-| `GEMINI_API_KEY`| ✅       | —                   | Google Gemini API key               |
-| `LLM_MODEL`     | ❌       | `gemini-2.5-flash`  | Gemini model name                   |
-| `LLM_MAX_TOKENS`| ❌       | `8192`              | Maximum tokens in LLM response      |
-| `LLM_TIMEOUT`   | ❌       | `90`                | Request timeout in seconds          |
-| `API_HOST`      | ❌       | `localhost`         | Host the CLI connects to            |
-| `API_PORT`      | ❌       | `9090`              | Port the CLI connects to            |
+The frontend calls this **first**, every turn, to run the safety judge on the student's
+`prompt` only (no `file_context` — saves judge tokens). On `done` / `unavailable` it
+proceeds to `tutor_chats`; on `forbidden` it shows the refusal and stops.
 
-Variables are loaded automatically from `cli/.env` (fallback) or a root-level `.env` file.
+**Request body:** `{ course_id, project_id, student_id, prompt }`
+**Response body:** `{ log_id, status, refusal?, usage }`
 
----
+The returned `log_id` is passed to `tutor_chats` as **`guard_log_id`** — that route
+verifies it (a DB check, no second guard LLM call) instead of re-running the guard. For
+this to work the backend persists the judged `prompt` with the log.
 
-## Error Handling
+> **Canonical spec:** `Tyla-api/doc/api_guard_checks.md`. The status-enum shape is a
+> **TARGET** (live endpoint still returns `allowed: bool` until Workstream A ships).
 
-All endpoints return JSON error bodies with an `error` key:
-
-```json
-{ "error": "human-readable error message" }
-```
-
-| HTTP Status | Meaning                                              |
-|-------------|------------------------------------------------------|
-| `200`       | Success                                              |
-| `400`       | Bad request — missing or invalid input fields        |
-| `500`       | Server error — Gemini API failure, network issue, etc. |
-
-If `GEMINI_API_KEY` is missing, the server will raise on startup:
-```
-GEMINI_API_KEY is not set. Add it to your .env or cli/.env file.
-```
+Frontend component: `GuardCheckGateway` (mirrors `TutorChatGateway`).
 
 ---
 
-## cURL Examples
+## 6. Endpoint 2 — `POST /api/v1/tutor_chats`
 
-```bash
-# Health check
-curl http://localhost:9090/
+Composes the full tutor prompt server-side from assignment artefacts + the request's
+`file_context`, calls the tutor LLM, and returns text plus structured actions. **Verifies
+the `guard_log_id`** from the pre-call against the DB (exists, status ∈ {`done`,
+`unavailable`}, prompt matches) — a no-LLM check that replaces re-running the guard, so a
+client can't skip `guard_checks` to bypass safety.
 
-# POST /resolve
-curl -s -X POST http://localhost:9090/resolve \
-  -H "Content-Type: application/json" \
-  -d '{
-    "instruction": "Add error handling to data loading",
-    "files": [
-      { "path": "load_data.R", "preview": "load <- function(p) read.csv(p)" }
-    ]
-  }' | jq .
+**Request body:** `{ course_id, project_id, student_id, guard_log_id, prompt, history, file_context? }`
+- `guard_log_id` — **TARGET** — the `log_id` from the `guard_checks` pre-call; the backend
+  verifies it instead of re-running the guard.
+- `file_context` — **TARGET** — pre-assembled, token-budgeted workspace text built by the
+  frontend (`buildFileContext()`), since the backend can't reach the local filesystem.
 
-# POST /edit
-curl -s -X POST http://localhost:9090/edit \
-  -H "Content-Type: application/json" \
-  -d '{
-    "file_path": "load_data.R",
-    "content": "load <- function(p) read.csv(p)",
-    "instruction": "Add tryCatch error handling"
-  }' | jq .
-```
+**Response body:** `{ log_id, status, content, actions?, usage }`
+- `actions` — **TARGET** — structured suggestions the TUI executes behind approval (§7).
+
+> **Canonical spec:** `Tyla-api/doc/api_tutor_chats.md`. The `status` enum + `usage` shape
+> are live; `file_context` and `actions[]` are TARGET (Workstream B).
+
+Frontend component: [`TutorChatGateway`](../tyla/src/infrastructure/api/tutor/tutor-chat-gateway.ts).
 
 ---
 
-## Architecture Notes
+## 7. Actions & the approval gate (TARGET)
 
-### Why two phases?
+When `tutor_chats` returns `actions[]`, [`ExecuteTutorUseCase`](../tyla/src/application/use-cases/execute-tutor-use-case.ts)
+renders `content`, then dispatches each action:
 
-Sending all file contents to the LLM in one shot is expensive and slow.
-Phase 1 (`/resolve`) uses only file names + 10-line previews to identify the 1–2 relevant files.
-Phase 2 (`/edit`) sends only those files' full content.
-This keeps token usage minimal and response times fast.
+```ts
+type TutorAction =
+  | { type: 'edit_file';      path: string; patches: Array<{ search: string; replace: string }> }
+  | { type: 'execute_script'; code: string }
+  | { type: 'load_file';      path: string };
+```
 
-### Prompt design
+| Action | Frontend behaviour | Gate |
+|--------|--------------------|------|
+| `edit_file` | `file_read` → `applyPatches` → diff → `diff_proposed` event | **approval → write** (reuses `EditStagingService` + `FileEditTool`) |
+| `execute_script` | `script_proposed` event with the code | **approval → `r_exec` (read-only)** |
+| `load_file` | read file into context | none (read-only) |
 
-- **ResolveService** instructs Gemini to return a JSON array only — no prose.
-  The response is parsed with a regex fallback (`/\[[\s\S]*?\]/`) to handle any stray text.
-- **EditService** instructs Gemini to return raw R code only — no markdown fences.
-  A `strip_code_fences` post-processor removes fences in case Gemini ignores the instruction.
+Rules the frontend relies on (enforced by the backend prompt):
+- `edit_file` uses **search-replace patches**, never full file content (4000-token output ceiling).
+- `execute_script` is **read-only** — changing files is `edit_file`'s job (which gets a diff).
+- **No `actions` on `forbidden`/`error`.**
 
-### Source files
+> **One-line takeaway:** the tutor can now act — but every file change still passes
+> through diff + human approval. The LLM never writes to disk directly.
 
-| File | Responsibility |
-|------|---------------|
-| [app.rb](../app/application/controllers/app.rb) | Roda router — validates input, calls services, returns JSON |
-| [resolve_service.rb](../app/application/services/resolve_service.rb) | Builds resolve prompt, calls Gemini, parses file list |
-| [edit_service.rb](../app/application/services/edit_service.rb) | Builds edit prompt, calls Gemini, strips code fences |
-| [gemini_api.rb](../app/infrastructure/gateways/gemini_api.rb) | HTTP client for Google Gemini REST API |
-| [config/environment.rb](../config/environment.rb) | Loads `.env`, requires all app files |
-| [config.ru](../config.ru) | Rack entry point + CORS middleware |
+---
+
+## 8. Usage accounting
+
+Each turn produces **two** usage figures: the guard judge (`guard_checks.usage`) and the
+tutor (`tutor_chats.usage`). The frontend tracks them separately (`guardUsage` /
+`tutorUsage`) and sums for the [token status bar](../plans/2026-05-29-issue-3-tui-token-status-bar.md).
+
+> The two figures are **disjoint** — `tutor_chats` no longer runs the guard (it only
+> DB-verifies the `guard_log_id`), so its `usage` is tutor-only and the guard's tokens are
+> counted exactly once via `guard_checks.usage`. No double-counting.
+
+---
+
+## 9. Frontend code map
+
+| Concern | File |
+|---------|------|
+| Tutor pipeline (guard → tutor → actions) | [execute-tutor-use-case.ts](../tyla/src/application/use-cases/execute-tutor-use-case.ts) |
+| Tutor gateway (`/tutor_chats`) | [tutor-chat-gateway.ts](../tyla/src/infrastructure/api/tutor/tutor-chat-gateway.ts) |
+| Guard gateway (`/guard_checks`) | `infrastructure/api/guard/guard-check-gateway.ts` *(TARGET — to be added)* |
+| Edit staging + write | `EditStagingService`, `FileEditTool` (single `fs.writeFileSync` site) |
+| Tools (`file_read` / `pdf_read` / `r_exec` / `file_scan`) | `application/orchestration/tool-registry.ts` |
+
+---
+
+## 10. Related plans
+
+- Frontend pipeline: [`plans/2026-06-03-agentic-tutor-react-pipeline.md`](../plans/2026-06-03-agentic-tutor-react-pipeline.md)
+- Backend changes: `Tyla-api/plans/2026-06-03-agentic-tutor-backend.md`
+- File context: [`plans/2026-06-02-gateway-file-context.md`](../plans/2026-06-02-gateway-file-context.md)
+- Actions + approval: [`plans/2026-06-02-tutor-actions-implementation.md`](../plans/2026-06-02-tutor-actions-implementation.md)
+- Backend response standardization (status enum origin): `Tyla-api/plans/2026-05-27-issue-1-api-response-standardization.md`
+```

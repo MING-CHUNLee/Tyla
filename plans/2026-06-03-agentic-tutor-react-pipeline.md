@@ -29,13 +29,8 @@
 
 ```
 execute(instruction, history)
-  ├─ if tutorChatGateway → callGateway()        ← production：POST /api/v1/tutor_chats，回傳 flat content
-  └─ else（offline fallback）
-       1. buildProjectContext()   file_scan
-       2. readRelevantFiles()     依檔名/副檔名比對讀檔
-       3. runGuard()              本地 guard agent
-       4. assemblePrompt()        把 context + 檔案內容塞進 system prompt
-       5. callLLMStream()         串流 token，回 { content, usage }
+  └─ callGateway()    ← POST /api/v1/tutor_chats，回傳 flat content
+                         （TUI 無法脫離後端運行，offline fallback 已移除）
 ```
 
 三個關鍵事實（決定了改動範圍）：
@@ -63,12 +58,12 @@ sequenceDiagram
     U->>UC: tutor prompt
     UC->>UC: buildFileContext  scan + read relevant files
     UC->>GC: POST guard_checks  prompt
-    alt allowed false
+    alt status forbidden
         GC-->>UC: refusal
         UC->>U: show refusal, end turn
-    else allowed true or unavailable
-        GC-->>UC: allowed, log_id
-        UC->>TC: POST tutor_chats  prompt + file_context + history
+    else status done or unavailable
+        GC-->>UC: status, guard_log_id
+        UC->>TC: POST tutor_chats  prompt + file_context + history + guard_log_id
         TC-->>UC: content + actions + usage
         UC->>U: render content
         loop each action
@@ -131,7 +126,7 @@ guard_checks response：
 兩個設計取捨：
 
 - **狀態放 body 而非 HTTP code**：現況靠 HTTP 200/202 區分 allowed/unavailable，改成統一用 body `status` 後，HTTP 一律 200（只有 malformed request / 缺 key 才回 4xx，例如 401 missing `X-LLM-Key`）。這樣 guard 與 tutor 兩端點的解析程式碼可共用。
-- **`usage` 開始有兩筆**：guard judge call 與 tutor call 各吃一次 token。前端每回合要把兩筆 usage **分別記錄或加總**（影響 [token status bar](./2026-05-29-issue-3-tui-token-status-bar.md)）。建議 persist turn 時分開存 `guardUsage` / `tutorUsage`，顯示時加總。
+- **`usage` 有兩筆，但不重複計**：guard judge（`guard_checks.usage`）與 tutor（`tutor_chats.usage`）各一次。**tutor_chats 已不再內含 guard**（改驗 `guard_log_id`，見 §3.2 / §3.3），所以兩筆是乾淨的、不會 double-count。前端 persist 時分開存 `guardUsage` / `tutorUsage`，顯示時加總（影響 [token status bar](./2026-05-29-issue-3-tui-token-status-bar.md)）。
 - 後端可保留 `attack_probability` / `evaluation` 供 log 與分析，**前端不讀**。
 
 新增前端元件：`GuardCheckGateway`（對照既有 `TutorChatGateway` 的形狀），組 body + 四個 LLM header + 解析統一 `status`。
@@ -145,6 +140,7 @@ interface TutorChatRequest {
     course_id:     string;
     project_id:    string;
     student_id:    string;
+    guard_log_id:  number;   // ← guard_checks 回的 log_id；後端用它驗證（取代內含 guard），見 §3.3
     prompt:        string;
     history:       SessionMessage[];
     file_context?: string;   // ← 前端預先組好、已做 token budget 截斷的純文字
@@ -164,7 +160,7 @@ private async buildFileContext(instruction: string): Promise<string> {
 }
 ```
 
-offline path 與 gateway path **共用同一個** `buildFileContext()`，token budget 邏輯集中一處。
+`buildFileContext()` 是 gateway path 唯一的 context 組裝入口，token budget 邏輯集中一處。
 
 ### 3.3 tutor_chats response —— 加 actions[]
 
@@ -192,9 +188,11 @@ type TutorAction =
 
 > **Token 約束（沿用既有決定）**：LLM key output 上限 4000 tokens，tutor 文字本身約 200–600，不夠塞完整檔案 content → `edit_file` 一律用 **search-replace patch**，不送完整檔案內容。
 
+> **actions schema 是前後端共用契約（Q-B2 定案）**：上面的 `TutorAction` JSON 形狀就是合約，前後端都照它對齊。後端 LLM 用 `<actions>...</actions>` 分隔符夾帶、由後端解析；**malformed JSON → 丟掉 actions、保留 prose**。前端只收乾淨的 `actions[]`，看不到分隔符。
+
 **型別連鎖改動**：`TutorChatResponse` 加 `actions?`、`TutorChatResult` done/unavailable branch 加 `actions: TutorAction[]`（`send()` map 時 `actions: data.actions ?? []`）、`TutorResult` 加 `actions`。`forbidden` / `error` 一律不帶 actions。
 
-> **`forbidden` 在前置 guard 之後的角色（Q3 後半）**：guard 既然前置，正常流程下 tutor_chats 只會收到已過關的 prompt，`forbidden` 幾乎不會出現。**保留它作為後端第二道防線**（backend tutor 仍可在偵測到異常時 refuse），同時讓兩個端點 enum 一致 —— 不刪、但視為 rare path。新增 `error` 讓後端能在 body 明確標示失敗，而非只靠 HTTP 5xx。`TutorChatGateway` 的 status union 補上 `'error'`。
+> **`forbidden` 在 tutor_chats 的新語意（Q-A1 定案）**：tutor_chats **拿掉內含 guard LLM**，改成要求帶上 guard_checks 回的 `guard_log_id`，後端做一次 DB 查核（log 存在 + status ∈ {done, unavailable} + 存的 prompt 相符，**不花 LLM token**）。所以 tutor_chats 的 `forbidden` = **guard 憑證缺失/不符**（例如有人跳過 guard_checks 直接打、或拿無關 prompt 的舊憑證來套）。正常流程前端只在 guard 過關後才打 tutor_chats，故此分支主要防的是繞過前置呼叫的 client。新增 `error` 供 body 明確標示失敗；`TutorChatGateway` 的 status union 補上 `'error'`。`usage` 改 **tutor-only**（guard token 已由 guard_checks 計）。
 
 ---
 
@@ -314,8 +312,8 @@ flowchart TD
 | [execute-tutor-use-case.ts](../tyla/src/application/use-cases/execute-tutor-use-case.ts) | （Option A 額外）用 `ReActLoop` 包 gateway 單步呼叫，註冊唯讀工具、withhold `file_edit` | A only |
 | [agent-service.ts](../tyla/src/application/services/agent-service.ts) | 構造 tutor use case 時注入 `guardCheckGateway`、`stagingService`、`onApproval` | A+B |
 | TUI event mapper | 新增 `script_proposed`、`file_loaded` handler；`diff_proposed` 重用 | A+B |
-| 後端 `POST /api/v1/tutor_chats` | 接 `file_context` 注入 system prompt；回 `actions[]`；移除內含 guard（改由 guard_checks 負責） | A+B |
-| 後端 `POST /api/v1/guard_checks` | 確認/精簡回傳格式（見 §7） | A+B |
+| 後端 `POST /api/v1/tutor_chats` | 接 `file_context`（去重 fixture WIP）注入 system prompt；回 `actions[]`；**移除內含 guard LLM、改驗 `guard_log_id`**（DB 查核，見後端 plan §4）；`usage` 改 tutor-only | A+B |
+| 後端 `POST /api/v1/guard_checks` | 統一 `status` enum（WS-A）；**持久化 prompt 供 tutor_chats 查核**；回的 `log_id` 即 `guard_log_id` | A+B |
 
 ---
 
@@ -339,6 +337,7 @@ flowchart TD
 
 ## 附錄：與既有 plan 的關係
 
+- **後端對應 plan**：`Tyla-api/plans/2026-06-03-agentic-tutor-backend.md` —— 涵蓋 guard_checks status 對齊（WS-A，close 後端 Issue-1 §6 open question）與 tutor_chats 的 file_context + actions（WS-B）。兩份 plan 是同一個契約變更的前/後端兩面。
 - **延續**：[gateway-file-context](./2026-06-02-gateway-file-context.md)（file_context）、[tutor-actions-implementation](./2026-06-02-tutor-actions-implementation.md)（actions + approval）、[agentic-tutor-slide-revised](./2026-06-02-agentic-tutor-slide-revised.md)（wire 格式）。
 - **修訂**：[tutor-action-triggering](./2026-06-01-tutor-action-triggering.md) 把「tutor 進 ReAct loop」列為 out-of-scope —— 本 plan 在 §4 把它**有條件地**帶回（只開放唯讀工具、寫入仍走 approval），作為 Option A / 第二階段。
 - **整合**：[api_guard_checks](../../Tyla-api/doc/api_guard_checks.md) 從「tutor_chats 內含」改為**獨立前置呼叫**。
