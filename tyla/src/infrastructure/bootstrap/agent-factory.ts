@@ -47,8 +47,10 @@ import { ExecuteInstructionUseCase } from '../../application/use-cases/execute-i
 import { ExecuteRunUseCase } from '../../application/use-cases/execute-run-use-case';
 import { ExecuteTutorUseCase } from '../../application/use-cases/execute-tutor-use-case';
 import { TutorChatGateway } from '../api/tutor/tutor-chat-gateway';
+import { GuardCheckGateway } from '../api/guard/guard-check-gateway';
 import { appendGuardLog } from '../persistence/guard-log-repository';
 import { getProfile } from '../config/profile';
+import { getEnv, ENV_VARS } from '../config';
 import { ExecuteInstallUseCase } from '../../application/use-cases/execute-install-use-case';
 
 import type {
@@ -143,8 +145,21 @@ export function buildAgentDeps(
         ? new TutorChatGateway((msg) => emit('status_update', { warning: msg }), directory)
         : undefined;
 
+    // Gate the Option B guard pre-call on the env flag AND a profile — not on profile alone.
+    // Default-off means merging this changes nothing until TYLA_GUARD_PRECALL=1 is set
+    // (after backend WS-A); flipping the flag activates guard→tutor→actions with no code change.
+    const guardPrecallEnabled = ['1', 'true'].includes((getEnv(ENV_VARS.GUARD_PRECALL) ?? '').toLowerCase());
+    const guardCheckGateway = guardPrecallEnabled && getProfile(directory)
+        ? new GuardCheckGateway((msg) => emit('status_update', { warning: msg }), directory)
+        : undefined;
+
     const tutorUseCase = new ExecuteTutorUseCase(
-        { llm, registry, directory, emit, policyLoader: assignmentPolicyLoader, tutorChatGateway },
+        {
+            registry, directory, emit, policyLoader: assignmentPolicyLoader,
+            tutorChatGateway, guardCheckGateway,
+            onApproval: approvalBus.approve.bind(approvalBus),   // same gate as instructionUseCase
+            diffEngine,
+        },
         modeManager.getMode(),
     );
 
