@@ -104,7 +104,7 @@ export function createHarness(opts: HarnessOpts): Harness {
     const runUseCase = new ExecuteRunUseCase({ llm, registry, directory, emit });
 
     const tutorUseCase = new ExecuteTutorUseCase(
-        { llm, registry, directory, emit }, modeManager.getMode(),
+        { registry, directory, emit }, modeManager.getMode(),
     );
     const installUseCase = new ExecuteInstallUseCase({ registry, emit });
 
