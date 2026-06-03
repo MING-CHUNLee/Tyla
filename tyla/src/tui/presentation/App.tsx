@@ -8,7 +8,6 @@ import InstallReview from './components/InstallReview.js';
 import StatusBar from './components/StatusBar.js';
 import ThinkingIndicator from './components/ThinkingIndicator.js';
 import StreamingMessage from './components/StreamingMessage.js';
-import Logo from './components/Logo.js';
 import { TUIMessage, AppState, PendingEdit, PendingInstall } from './types.js';
 import { StatusBarVM, StatusBarDisplayConfig } from '../../shared/view-models/index.js';
 
@@ -48,8 +47,6 @@ const AppView: React.FC<AppViewProps> = ({
             <Header messageCount={messages.length} />
 
             <Box flexGrow={1} flexDirection="column" paddingX={2}>
-                {messages.every(m => m.type === 'status') && <Logo />}
-
                 <ChatHistory messages={messages} />
 
                 {isStreaming && streamingContent && (
