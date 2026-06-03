@@ -20,10 +20,11 @@ function isNodeError(e: unknown): e is NodeJS.ErrnoException {
 }
 
 export interface StagedEdit {
-    path: string;      // relative path as given by the LLM
+    path: string;      // relative path as given by the LLM (shown in the diff header)
     content: string;   // proposed new content
     original: string;  // content that was on disk at staging time ('' for new files)
     diff: string;      // coloured diff string ready for display
+    absPath?: string;  // set by stageOnly(): resolved target for applyEdit (tutor uses a base dir ≠ cwd)
 }
 
 type EmitFn = (type: string, data: Record<string, unknown>) => void;
@@ -68,6 +69,33 @@ export class EditStagingService {
         const staged: StagedEdit = { path: filePath, content, original, diff };
         this._staged.push(staged);
         return { staged };
+    }
+
+    /**
+     * Like stage(), but (a) does NOT push to the drain queue — for callers that apply
+     * per-edit (the tutor dispatch), and (b) resolves `relPath` against `baseDir` (not cwd)
+     * for read/diff/apply while keeping `relPath` for display.
+     */
+    stageOnly(relPath: string, content: string, baseDir: string):
+        { staged: StagedEdit } | { error: string; isHardError: boolean } {
+        const absPath = path.resolve(baseDir, relPath);
+        const exists  = this.fileSystem.exists(absPath);
+
+        let original = '';
+        if (exists) {
+            try {
+                original = this.fileSystem.read(absPath);
+            } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                return { error: `Cannot read ${path.basename(absPath)}: ${msg}`, isHardError: true };
+            }
+        }
+        if (original === content) {
+            return { error: `No changes detected in ${path.basename(absPath)}.`, isHardError: false };
+        }
+
+        const diff = this.diffEngine.generateColoredDiff(original, content);
+        return { staged: { path: relPath, content, original, diff, absPath } };   // not pushed
     }
 
     /**
@@ -122,7 +150,7 @@ export class EditStagingService {
      * Called by the use case for each edit the user accepts.
      */
     applyEdit(edit: StagedEdit): void {
-        const absPath = path.resolve(edit.path);
+        const absPath = edit.absPath ?? path.resolve(edit.path);
         this.fileSystem.mkdir(path.dirname(absPath));
         this.fileSystem.write(absPath, edit.content);
     }

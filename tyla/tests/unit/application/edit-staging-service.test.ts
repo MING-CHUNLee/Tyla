@@ -200,6 +200,62 @@ describe('EditStagingService', () => {
         });
     });
 
+    // ── stageOnly() ───────────────────────────────────────────────────────────
+
+    describe('stageOnly()', () => {
+        it('does NOT push to the drain queue (stage + apply leave drain empty)', () => {
+            const { service } = makeService({
+                exists: vi.fn().mockReturnValue(true),
+                read: vi.fn().mockReturnValue('old\n'),
+            });
+
+            const result = service.stageOnly('hw11.R', 'new\n', '/project');
+            expect('staged' in result).toBe(true);
+
+            const { staged } = result as { staged: StagedEdit };
+            service.applyEdit(staged);
+
+            expect(service.drainStagedEdits()).toHaveLength(0);
+        });
+
+        it('keeps the relative path for display and resolves absPath against baseDir', () => {
+            const { service } = makeService({
+                exists: vi.fn().mockReturnValue(false),
+            });
+
+            const result = service.stageOnly('hw11.R', 'x <- 1\n', '/project');
+            const { staged } = result as { staged: StagedEdit };
+
+            expect(staged.path).toBe('hw11.R');               // relative for the diff header
+            expect(staged.absPath).toContain('hw11.R');
+            expect(staged.absPath).toContain('project');      // resolved against baseDir
+        });
+
+        it('applyEdit writes to the carried absPath (tutor directory, not cwd)', () => {
+            const { service, fs } = makeService({ exists: vi.fn().mockReturnValue(false) });
+
+            const result = service.stageOnly('hw11.R', 'x <- 1\n', '/project');
+            const { staged } = result as { staged: StagedEdit };
+            service.applyEdit(staged);
+
+            const [writtenPath] = (fs.write as ReturnType<typeof vi.fn>).mock.calls[0];
+            expect(writtenPath).toBe(staged.absPath);
+        });
+
+        it('returns a soft error when content is identical', () => {
+            const { service } = makeService({
+                exists: vi.fn().mockReturnValue(true),
+                read: vi.fn().mockReturnValue('same\n'),
+            });
+
+            const result = service.stageOnly('hw11.R', 'same\n', '/project');
+
+            const err = result as { error: string; isHardError: boolean };
+            expect(err.isHardError).toBe(false);
+            expect(err.error).toContain('No changes detected');
+        });
+    });
+
     // ── applyEdit() ───────────────────────────────────────────────────────────
 
     describe('applyEdit()', () => {

@@ -47,6 +47,8 @@ export type AgentEvent =
     | { type: 'diff_proposed';     data: { path: string; diff: string; original: string; proposed: string } }
     | { type: 'edit_applied';      data: { path: string } }
     | { type: 'edit_rejected';     data: { path: string } }
+    | { type: 'script_proposed';   data: { code: string } }
+    | { type: 'script_rejected';   data: Record<string, never> }
     | { type: 'turn_saved';        data: {
         turnCount:           number;
         sessionId:           string;
@@ -59,7 +61,7 @@ export type AgentEvent =
         lastResponseTimeMs?: number;
     } }
     | { type: 'error';             data: { message: string; phase?: string } }
-    | { type: 'status_update';     data: { plugins?: string[]; warning?: string; knowledge?: string[] } }
+    | { type: 'status_update';     data: { plugins?: string[]; warning?: string; knowledge?: string[]; info?: string } }
     | { type: 'tool_result_scan';     data: { data: unknown } }
     | { type: 'tool_result_library';  data: { data: unknown } }
     | { type: 'tool_result_r_exec';   data: { data: unknown } }
