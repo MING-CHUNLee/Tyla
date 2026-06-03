@@ -1,5 +1,6 @@
 # Ignore cluade local setting
 .claude/
+memory/
 
 
 # Except README.md in root docs/

@@ -74,6 +74,9 @@ export const ENV_VARS = {
     // App settings
     DEBUG: 'DEBUG',
     LOG_LEVEL: 'LOG_LEVEL',
+
+    // Option B guard pre-call gate — '1' / 'true' enables the guard_checks pre-call.
+    GUARD_PRECALL: 'TYLA_GUARD_PRECALL',
 } as const;
 
 // ============================================

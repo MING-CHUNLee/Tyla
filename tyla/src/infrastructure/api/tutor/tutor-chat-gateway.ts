@@ -1,32 +1,26 @@
 import axios from 'axios';
+import { TutorAction, isTutorAction } from '../../../shared/types/tutor-actions';
 import { SessionMessage } from '../../../shared/types/messages';
-import { getEnv, detectProvider, getApiKeyForProvider, getEndpointForProvider, ENV_VARS } from '../../config';
-import { getProfile } from '../../config/profile';
 import { TYLA_API } from '../../config/constants';
+import { buildTylaApiRequest } from '../shared/build-llm-headers';
+import { parseUsage, Usage } from '../shared/parse-usage';
 
 // ── Wire types ────────────────────────────────────────────────────────────────
 
 interface TutorChatResponse {
     log_id: number;
-    status: 'done' | 'forbidden' | 'unavailable';
+    status: 'done' | 'forbidden' | 'error' | 'unavailable';   // unified ApiStatus
     content: string;
+    actions?: unknown[];          // validated → TutorAction[] in send()
     usage: { input_tokens: number; output_tokens: number } | null;
 }
 
 // ── Domain result ─────────────────────────────────────────────────────────────
 
 export type TutorChatResult =
-    | { status: 'done' | 'unavailable'; logId: number; content: string; usage: { inputTokens: number; outputTokens: number }; guardSkipped: boolean }
-    | { status: 'forbidden';            logId: number; content: string; usage: { inputTokens: number; outputTokens: number } };
-
-// Returns validated non-negative integers; falls back to 0 on invalid.
-function parseUsage(raw: { input_tokens: number; output_tokens: number } | null | undefined)
-    : { inputTokens: number; outputTokens: number } {
-    const MAX = 1_000_000;
-    const safe = (n: unknown): number =>
-        typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= MAX ? n : 0;
-    return { inputTokens: safe(raw?.input_tokens), outputTokens: safe(raw?.output_tokens) };
-}
+    | { status: 'done' | 'unavailable'; logId: number; content: string; actions: TutorAction[]; usage: Usage; guardSkipped: boolean }
+    | { status: 'forbidden';            logId: number; content: string; usage: Usage }
+    | { status: 'error';                logId: number; content: string; usage: Usage };
 
 // ── Gateway ───────────────────────────────────────────────────────────────────
 
@@ -42,20 +36,13 @@ export class TutorChatGateway {
         this.timeout = TYLA_API.DEFAULT_TIMEOUT_MS;
     }
 
-    async send(prompt: string, history: SessionMessage[]): Promise<TutorChatResult> {
-        const profile  = getProfile(this.directory);
-        const provider = detectProvider();
-
-        if (!profile) {
-            throw new Error('tutor-api: profile.json missing');
-        }
-
-        let apiKey: string;
-        try {
-            apiKey = getApiKeyForProvider(provider);
-        } catch {
-            throw new Error('tutor-api: could not resolve LLM key');
-        }
+    async send(
+        prompt: string,
+        history: SessionMessage[],
+        guardLogId: number,
+        fileContext?: string,
+    ): Promise<TutorChatResult> {
+        const { profile, headers } = buildTylaApiRequest('tutor-api', this.directory);
 
         const response = await axios.post<TutorChatResponse>(
             `${this.baseUrl}/api/v1/tutor_chats`,
@@ -63,18 +50,14 @@ export class TutorChatGateway {
                 course_id:  profile.courseId,
                 project_id: profile.projectId,
                 student_id: profile.studentId,
+                guard_log_id: guardLogId,
                 prompt,
                 history,
+                ...(fileContext ? { file_context: fileContext } : {}),
             },
             {
                 timeout: this.timeout,
-                headers: {
-                    'Content-Type':   'application/json',
-                    'X-LLM-Key':      apiKey,
-                    'X-LLM-Provider': provider,
-                    'X-LLM-Endpoint': getEndpointForProvider(provider),
-                    'X-LLM-Model':    getEnv(ENV_VARS.LLM_MODEL) ?? '',
-                },
+                headers,
                 validateStatus: (status) => status === 200 || status === 202,
             },
         );
@@ -90,15 +73,30 @@ export class TutorChatGateway {
             };
         }
 
+        if (data.status === 'error') {
+            return {
+                status:  'error',
+                logId:   data.log_id,
+                content: data.content,
+                usage:   parseUsage(data.usage),
+            };
+        }
+
         const guardSkipped = data.status === 'unavailable';
         if (guardSkipped) {
             this.onWarning?.('guard skipped: llm unavailable');
         }
 
+        // Q-B2: keep only well-formed actions; drop the rest, never throw.
+        const actions: TutorAction[] = Array.isArray(data.actions)
+            ? data.actions.filter(isTutorAction)
+            : [];
+
         return {
             status:      data.status,
             logId:       data.log_id,
             content:     data.content,
+            actions,
             guardSkipped,
             usage: parseUsage(data.usage),
         };
