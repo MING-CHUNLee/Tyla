@@ -1,8 +1,8 @@
 # Option B — Frontend Type-Chain Implementation Draft
 
-> **Status: TARGET / draft diffs (2026-06-03).** Concrete, copy-pasteable changes that
-> turn the agentic-tutor pipeline from "single flat `content`" into the **Option B** shape:
-> `guard_checks` (pre-call) → `tutor_chats` (with `guard_log_id` + `file_context`) →
+> **Status: TARGET / draft diffs (2026-06-03, rev. 2).** Concrete, copy-pasteable changes
+> that turn the agentic-tutor pipeline from "single flat `content`" into the **Option B**
+> shape: `guard_checks` (pre-call) → `tutor_chats` (with `guard_log_id` + `file_context`) →
 > `actions[]` → approval gate. Companion to
 > [`2026-06-03-agentic-tutor-react-pipeline.md`](2026-06-03-agentic-tutor-react-pipeline.md)
 > (the decision doc) and the backend `Tyla-api/plans/2026-06-03-agentic-tutor-backend.md`.
@@ -11,11 +11,29 @@
 > / `guard_log_id`). Ship the frontend types behind the gateway path; nothing breaks until
 > the backend returns the new fields. The `actions` array is simply absent until then.
 
+> **Rev. 2 — resolves the pre-implementation review** ([`2026-06-03.md`](2026-06-03.md)).
+> The first draft had two **blocking** gaps (the dispatch would deadlock and the gateway
+> would break live tutor calls). Every item below is now addressed in-plan:
+>
+> | # | Review finding | Resolved in |
+> |---|----------------|-------------|
+> | 1 🔴 | `script_proposed` had no event-mapper case → approval **deadlock** | **§6.1** (new) — mapper cases + `pendingApproval` union |
+> | 2 🔴 | `GuardCheckGateway` config-flag mechanism undefined → breaks live tutor calls pre-WS-A | **§3** + **§6.2** — `TYLA_GUARD_PRECALL` env flag |
+> | 3 🟠 | `'error'` status unhandled in both gateways | **§3, §4a, §5b** — `'error'` branch (show + retry) |
+> | 4 🟠 | post-§5e `guardCheckGateway!` unguarded → raw `TypeError` | **§5b/§5e** — early `if (!gateway) throw` friendly msg |
+> | 5 🟡 | `EditStagingService._staged` grows unbounded under tutor use | **§5c** — new `stageOnly()` (no queue push) |
+> | 6 🟡 | `status_update.info` silently dropped by mapper | **§6.1** — `info` case added |
+> | 7 🟡 | §6 table said `file_loaded` but dispatch emits `text_output` | **§5c/§6.1** — aligned on `text_output` |
+> | 8 🟢 | `TutorResult` carries no `actions` (doc mismatch) | **§5b** — explicit Phase-1 note + TODO |
+> | 9 🟢 | diff header shows absolute path | **§5c** — stage relative, resolve at apply |
+>
+> Where the review offered a choice, the decision taken is called out inline as **Decided:**.
+
 ---
 
 ## 0. Scope
 
-Three named changes plus the glue they imply:
+Four named changes plus the glue they imply:
 
 1. **NEW `GuardCheckGateway`** — `infrastructure/api/guard/guard-check-gateway.ts`. HTTP
    client for `POST /api/v1/guard_checks`. Mirrors `TutorChatGateway` exactly (same headers,
@@ -24,6 +42,12 @@ Three named changes plus the glue they imply:
    result gain `actions?`.
 3. **`execute-tutor-use-case.ts`** — `callGateway()` becomes the Option B orchestration:
    guard pre-call → tutor send → **dispatch `actions` behind the approval gate**.
+4. **TUI approval wiring** (`tui/presentation/event-mapper.ts` + `tui/controller/AppController.tsx`
+   + `tui/presentation/types.ts`) — **the second blocking item**: `dispatchExecuteScript`
+   emits `script_proposed` and then `await onApproval(...)`, but the mapper has no case for it,
+   so the TUI never enters `reviewing`, the resolver is never called, and the turn **deadlocks**.
+   §6.1 adds `script_proposed` / `script_rejected` mapper cases and consolidates the two
+   parallel `pendingReview` / `pendingInstall` slots into one `pendingApproval` union.
 
 Supporting:
 - **NEW shared type** `TutorAction` — `shared/types/tutor-actions.ts` (single source the
@@ -31,7 +55,8 @@ Supporting:
 - **Reuse, don't reinvent** the approval gate: `EditStagingService.stage()/applyEdit()` +
   the `onApproval` callback, exactly as
   [`execute-instruction-use-case.ts:210`](../tyla/src/application/use-cases/execute-instruction-use-case.ts#L210)
-  does today.
+  does today. The tutor stages with a **new `stageOnly()`** (§5c) so its per-action
+  stage→apply pattern never pollutes the instruction pipeline's drain queue.
 
 ---
 
@@ -43,6 +68,7 @@ buildFileContext()  ──► file_context: string ─┐
 GuardCheckGateway.check(prompt)               │
    └─► GuardCheckResult                        │
         ├ forbidden → show refusal, end turn   │
+        ├ error     → show error + retry, end  │
         └ done/unavailable → guardLogId ───────┤
                                               ▼
 TutorChatGateway.send(prompt, history, guardLogId, fileContext)
@@ -50,9 +76,9 @@ TutorChatGateway.send(prompt, history, guardLogId, fileContext)
                                               │
                                               ▼
 ExecuteTutorUseCase.dispatchActions(actions)
-   ├ edit_file      → applyPatches → stage → diff_proposed → onApproval → applyEdit
-   ├ execute_script → script_proposed → onApproval → r_exec (read-only)
-   └ load_file      → file_read → inject/show
+   ├ edit_file      → applyPatches → stageOnly → diff_proposed → onApproval → applyEdit
+   ├ execute_script → script_proposed → onApproval → r_exec (read-only) | script_rejected
+   └ load_file      → file_read → text_output
 ```
 
 ---
@@ -119,9 +145,10 @@ import { TYLA_API } from '../../config/constants';
 
 // ── Wire types ────────────────────────────────────────────────────────────────
 
+// Unified ApiStatus enum (decision doc §3.1) — shared by guard_checks and tutor_chats.
 interface GuardCheckResponse {
     log_id: number;
-    status: 'done' | 'forbidden' | 'unavailable';
+    status: 'done' | 'forbidden' | 'error' | 'unavailable';
     refusal: string | null;
     usage: { input_tokens: number; output_tokens: number } | null;
 }
@@ -130,7 +157,8 @@ interface GuardCheckResponse {
 
 export type GuardCheckResult =
     | { status: 'done' | 'unavailable'; logId: number; guardSkipped: boolean; usage: GuardUsage }
-    | { status: 'forbidden';            logId: number; refusal: string;        usage: GuardUsage };
+    | { status: 'forbidden';            logId: number; refusal: string;        usage: GuardUsage }
+    | { status: 'error';                message: string;                       usage: GuardUsage };
 
 type GuardUsage = { inputTokens: number; outputTokens: number };
 
@@ -190,7 +218,8 @@ export class GuardCheckGateway {
                     'X-LLM-Endpoint': getEndpointForProvider(provider),
                     'X-LLM-Model':    getEnv(ENV_VARS.LLM_MODEL) ?? '',
                 },
-                // guard_checks returns 200 (done/forbidden) or 202 (unavailable).
+                // WS-A: status lives in the body, HTTP is always 200 (only malformed
+                // request / missing key → 4xx). Keep 202 accepted for the pre-WS-A bridge.
                 validateStatus: (status) => status === 200 || status === 202,
             },
         );
@@ -199,6 +228,12 @@ export class GuardCheckGateway {
 
         if (data.status === 'forbidden') {
             return { status: 'forbidden', logId: data.log_id, refusal: data.refusal ?? '', usage: parseUsage(data.usage) };
+        }
+
+        // decision doc §3.1: backend/judge error → surface to student, suggest retry.
+        // No valid log_id is produced, so the turn must NOT proceed to tutor_chats.
+        if (data.status === 'error') {
+            return { status: 'error', message: data.refusal ?? 'guard check failed', usage: parseUsage(data.usage) };
         }
 
         const guardSkipped = data.status === 'unavailable';
@@ -211,10 +246,27 @@ export class GuardCheckGateway {
 }
 ```
 
-> **Live-vs-target note:** until backend WS-A ships, `/guard_checks` returns
-> `{ allowed: bool, attack_probability, evaluation }` and maps a missing key to `401`. Land
-> this gateway behind a config flag (or simply don't wire it until WS-A is green); the
-> `status`-based parsing above assumes the unified enum.
+> **Live-vs-target note — the config flag (review §2, blocking).** Until backend WS-A ships,
+> `/guard_checks` returns `{ allowed, attack_probability, evaluation }` (no `status`, no
+> `log_id`) and maps a missing key to `401`. If the gateway were wired the moment a
+> `profile.json` exists (as the first draft's §6 did), **every profiled tutor call would
+> break the day this lands**: `data.status` is `undefined` → falls through to the success
+> branch → `guard.logId` is `undefined` → `tutor_chats` is called with
+> `guard_log_id: undefined` → backend rejects.
+>
+> **Decided: gate on an explicit env flag, not on profile presence.** Add to the `ENV_VARS`
+> map in [`config/index.ts`](../tyla/src/infrastructure/config/index.ts#L54) (where
+> `LLM_MODEL` etc. already live):
+>
+> ```ts
+> GUARD_PRECALL: 'TYLA_GUARD_PRECALL',   // '1' / 'true' → enable Option B guard pre-call
+> ```
+>
+> The factory (§6.2) constructs `GuardCheckGateway` **only when the flag is truthy AND a
+> profile exists**. Default-off means: merging §2–§5 changes nothing for existing users
+> (the use case still needs `guardCheckGateway` to run the Option B path — see §5b's early
+> check). When WS-A is green, flip `TYLA_GUARD_PRECALL=1` in the deployed `.env`; no code
+> change, instantly revertable if the backend regresses.
 
 ---
 
@@ -230,7 +282,8 @@ Three edits: request body, response/result types, `send()` signature.
 
  interface TutorChatResponse {
      log_id: number;
-     status: 'done' | 'forbidden' | 'unavailable';
+-    status: 'done' | 'forbidden' | 'unavailable';
++    status: 'done' | 'forbidden' | 'error' | 'unavailable';   // unified ApiStatus
      content: string;
 +    actions?: unknown[];          // validated → TutorAction[] in send()
      usage: { input_tokens: number; output_tokens: number } | null;
@@ -240,8 +293,12 @@ Three edits: request body, response/result types, `send()` signature.
 -    | { status: 'done' | 'unavailable'; logId: number; content: string; usage: { inputTokens: number; outputTokens: number }; guardSkipped: boolean }
 -    | { status: 'forbidden';            logId: number; content: string; usage: { inputTokens: number; outputTokens: number } };
 +    | { status: 'done' | 'unavailable'; logId: number; content: string; actions: TutorAction[]; usage: { inputTokens: number; outputTokens: number }; guardSkipped: boolean }
-+    | { status: 'forbidden';            logId: number; content: string; usage: { inputTokens: number; outputTokens: number } };
++    | { status: 'forbidden';            logId: number; content: string; usage: { inputTokens: number; outputTokens: number } }
++    | { status: 'error';                logId: number; content: string; usage: { inputTokens: number; outputTokens: number } };
 ```
+
+> `'error'` (review §3) carries **no actions** — same as `forbidden`. `send()` returns it
+> verbatim; §5b shows it to the student with a retry hint.
 
 ### 4b. `send()` — take `guardLogId` (+ `fileContext`), forward them, map `actions`
 
@@ -275,6 +332,9 @@ Three edits: request body, response/result types, `send()` signature.
          if (data.status === 'forbidden') {
              return { status: 'forbidden', logId: data.log_id, content: data.content, usage: parseUsage(data.usage) };
          }
++        if (data.status === 'error') {
++            return { status: 'error', logId: data.log_id, content: data.content, usage: parseUsage(data.usage) };
++        }
 
          const guardSkipped = data.status === 'unavailable';
          if (guardSkipped) this.onWarning?.('guard skipped: llm unavailable');
@@ -361,6 +421,17 @@ pre-call → tutor send (with `guardLogId` + `fileContext`) → dispatch actions
 
 ```ts
 private async callGateway(instruction: string, history: SessionMessage[]): Promise<TutorResult> {
+    // ── 0. Guard the gateways (review §4) ──────────────────────────────────────
+    // After §5e removes the offline path, execute() calls straight here. Without
+    // these checks, an undefined gateway throws a raw `TypeError: ... reading 'check'`.
+    // Surface a clear, actionable message instead.
+    if (!this.deps.guardCheckGateway || !this.deps.tutorChatGateway) {
+        const msg = 'Tutor backend not configured — set a valid profile.json and '
+            + 'TYLA_GUARD_PRECALL=1, then restart tyla.';
+        this.deps.emit('error', { message: msg, phase: 'guard' });
+        throw new Error(msg);
+    }
+
     // ── 1. file_context (reuses scan + read helpers) ───────────────────────────
     const fileContext = await this.buildFileContext(instruction);
 
@@ -368,7 +439,7 @@ private async callGateway(instruction: string, history: SessionMessage[]): Promi
     this.deps.emit('phase_start', { phase: 'guard', description: 'Running safety check' });
     let guard;
     try {
-        guard = await this.deps.guardCheckGateway!.check(instruction);
+        guard = await this.deps.guardCheckGateway.check(instruction);
     } catch (error) {
         return this.failTutor('guard', error);
     }
@@ -379,6 +450,11 @@ private async callGateway(instruction: string, history: SessionMessage[]): Promi
         this.deps.emit('text_output', { content: guard.refusal });
         return { content: guard.refusal, usage: toTurnUsage(guard.usage) };
     }
+    if (guard.status === 'error') {
+        // review §3 / decision doc §3.1: no log_id produced → cannot proceed. Show + retry.
+        this.deps.emit('error', { message: `Safety check failed: ${guard.message}. Please try again.`, phase: 'guard' });
+        return { content: '', usage: toTurnUsage(guard.usage) };
+    }
     if (guard.guardSkipped) {
         this.deps.emit('status_update', { warning: 'guard skipped: llm unavailable' });
     }
@@ -387,7 +463,7 @@ private async callGateway(instruction: string, history: SessionMessage[]): Promi
     this.deps.emit('phase_start', { phase: 'tutor', description: 'Calling tutor API' });
     let result;
     try {
-        result = await this.deps.tutorChatGateway!.send(instruction, history, guard.logId, fileContext);
+        result = await this.deps.tutorChatGateway.send(instruction, history, guard.logId, fileContext);
     } catch (error) {
         return this.failTutor('tutor', error);
     }
@@ -397,7 +473,13 @@ private async callGateway(instruction: string, history: SessionMessage[]): Promi
         this.deps.emit('guard_blocked', { reason: 'guard_credential', phase: 'tutor' });
         this.deps.emit('text_output', { content: result.content });
         this.deps.emit('phase_end', { phase: 'tutor', success: true });
-        return { content: result.content, usage: toTurnUsage(result.usage) };
+        return { content: result.content, usage: addUsage(toTurnUsage(guard.usage), toTurnUsage(result.usage)) };
+    }
+    if (result.status === 'error') {
+        // review §3: server/judge error on the tutor leg — show + retry, no actions.
+        this.deps.emit('phase_end', { phase: 'tutor', success: false });
+        this.deps.emit('error', { message: `Tutor call failed: ${result.content || 'unknown error'}. Please try again.`, phase: 'tutor' });
+        return { content: result.content, usage: addUsage(toTurnUsage(guard.usage), toTurnUsage(result.usage)) };
     }
     if (result.guardSkipped) {
         this.deps.emit('status_update', { warning: 'tutor: guard credential accepted under fail-open' });
@@ -410,6 +492,10 @@ private async callGateway(instruction: string, history: SessionMessage[]): Promi
     await this.dispatchActions(result.actions);
 
     // guard + tutor usages are disjoint (tutor no longer re-runs guard) — summing is safe.
+    // NOTE (review §8): `actions` are dispatched here and intentionally NOT returned on
+    // TutorResult — Phase 1 does not persist "which actions were proposed" in session
+    // history. TODO(Phase 2 / Option A): thread `actions` onto TutorResult if session
+    // replay needs them.
     return { content: result.content, usage: addUsage(toTurnUsage(guard.usage), toTurnUsage(result.usage)) };
 }
 
@@ -469,7 +555,11 @@ private async dispatchEditFile(action: { path: string; patches: EditPatch[] }): 
     const proposed = applyPatches(original, action.patches,
         (msg) => this.deps.emit('status_update', { warning: `edit_file ${action.path}: ${msg}` }));
 
-    const staged = this.stagingService.stage(absPath, proposed);
+    // review §5 + §9: stageOnly() does NOT push to the drain queue (the tutor applies
+    // per-action, never drains), and stores the *relative* path for display while
+    // resolving against `directory` for read/apply — so the diff header shows
+    // `hw11.R`, not `C:\Users\Student\hw11\hw11.R`.
+    const staged = this.stagingService.stageOnly(action.path, proposed, this.deps.directory);
     if ('error' in staged) {
         if (staged.isHardError) this.deps.emit('error', { message: staged.error, phase: 'actions' });
         else this.deps.emit('status_update', { warning: staged.error });
@@ -477,7 +567,7 @@ private async dispatchEditFile(action: { path: string; patches: EditPatch[] }): 
     }
 
     this.deps.emit('diff_proposed', {
-        path: staged.staged.path, diff: staged.staged.diff,
+        path: staged.staged.path, diff: staged.staged.diff,        // relative
         original: staged.staged.original, proposed: staged.staged.content,
     });
 
@@ -489,7 +579,7 @@ private async dispatchEditFile(action: { path: string; patches: EditPatch[] }): 
         : false;
 
     if (approved) {
-        this.stagingService.applyEdit(staged.staged);
+        this.stagingService.applyEdit(staged.staged);             // uses staged.absPath
         this.deps.emit('edit_applied', { path: action.path });
     } else {
         this.deps.emit('edit_rejected', { path: action.path });
@@ -528,6 +618,63 @@ function applyPatches(original: string, patches: EditPatch[], warn: (m: string) 
     }
     return out;
 }
+```
+
+#### `EditStagingService.stageOnly()` — NEW (review §5 + §9)
+
+The existing `stage()` always `_staged.push(...)`; it's designed for the **batch** pattern
+(`FileEditTool` accumulates → use case `drainStagedEdits()` once). The tutor uses a
+**per-action** pattern (`stage → applyEdit` immediately, no drain), so calling `stage()`
+would grow `_staged` for the whole session and never clear it. Add a sibling that skips the
+queue and carries an absolute path for apply while keeping the relative path for display:
+
+```diff
+ export interface StagedEdit {
+     path: string;      // relative path as given by the LLM (shown in the diff header)
+     content: string;
+     original: string;
+     diff: string;
++    absPath?: string;  // set by stageOnly(): resolved target for applyEdit (tutor uses a base dir ≠ cwd)
+ }
+
++    /**
++     * Like stage(), but (a) does NOT push to the drain queue — for callers that apply
++     * per-edit (the tutor dispatch), and (b) resolves `relPath` against `baseDir` (not cwd)
++     * for read/diff/apply while keeping `relPath` for display.
++     */
++    stageOnly(relPath: string, content: string, baseDir: string):
++        { staged: StagedEdit } | { error: string; isHardError: boolean } {
++        const absPath = path.resolve(baseDir, relPath);
++        const exists  = this.fileSystem.exists(absPath);
++
++        let original = '';
++        if (exists) {
++            try {
++                original = this.fileSystem.read(absPath);
++            } catch (err) {
++                const msg = err instanceof Error ? err.message : String(err);
++                return { error: `Cannot read ${path.basename(absPath)}: ${msg}`, isHardError: true };
++            }
++        }
++        if (original === content) {
++            return { error: `No changes detected in ${path.basename(absPath)}.`, isHardError: false };
++        }
++
++        const diff = this.diffEngine.generateColoredDiff(original, content);
++        return { staged: { path: relPath, content, original, diff, absPath } };   // not pushed
++    }
+```
+
+`applyEdit()` prefers the carried absolute path so it writes to the tutor's `directory`,
+not `cwd`:
+
+```diff
+     applyEdit(edit: StagedEdit): void {
+-        const absPath = path.resolve(edit.path);
++        const absPath = edit.absPath ?? path.resolve(edit.path);
+         this.fileSystem.mkdir(path.dirname(absPath));
+         this.fileSystem.write(absPath, edit.content);
+     }
 ```
 
 ### 5d. Where the student's context file comes from
@@ -721,12 +868,104 @@ backend). So `execute()` collapses to the gateway path:
   `compactHistory()` (the server composes the prompt and calls the LLM now). The local
   `guardAgent?` / `llm` deps and the `MAX_*_TOKENS` client budget go with them.
 
+> **Review §4 — don't ship 5e without 5b's guard.** Once the `if (this.deps.tutorChatGateway)`
+> branch is gone, `execute()` calls `callGateway()` unconditionally. If the gateways are
+> `undefined` (no profile, or `TYLA_GUARD_PRECALL` off), the old code would dereference
+> `guardCheckGateway!.check()` and throw a bare `TypeError` that the student sees. The early
+> `if (!guardCheckGateway || !tutorChatGateway) { emit error; throw }` added at the top of
+> `callGateway()` in **§5b** is the guard that makes this safe — land it *with* or *before* 5e.
+
 > Do 5e as a **second commit** after 5a–5d land green — it's the largest deletion and the
 > easiest to review in isolation.
 
 ---
 
-## 6. Wiring — `infrastructure/bootstrap/agent-factory.ts`
+## 6. Wiring
+
+Two seams: the **TUI approval path** (§6.1 — the second blocking item) and the
+**composition root** (§6.2).
+
+### 6.1 TUI approval gate — `event-mapper.ts` + `AppController.tsx` + `types.ts` (review §1, §6, §7)
+
+**The deadlock (review §1, blocking).** `dispatchExecuteScript` (§5c) does:
+`emit('script_proposed', …)` then `await onApproval(…)`. In the TUI, `onApproval` returns a
+Promise that only resolves when `handleReviewDecision` fires
+([AppController.tsx:100](../tyla/src/tui/controller/AppController.tsx#L100)) — and that only
+runs once `appState === 'reviewing'` shows the student a y/n prompt. `reviewing` is entered by
+the mapper's side-effects. But [`event-mapper.ts`](../tyla/src/tui/presentation/event-mapper.ts)
+has **no `script_proposed` case** → it hits `default: return {}` → no side-effect → TUI stays
+`processing` → the student is never prompted → the resolver never fires → **the turn hangs
+forever**. Same latent gap for `script_rejected` (no feedback when the student declines).
+
+**Decided (review closing note): take Option C — one `pendingApproval` union.** The first
+draft has two parallel slots (`pendingReview` / `pendingInstall`) that are already mutually
+exclusive in practice. Since `script_proposed` would need a third slot, collapse all three
+into a single discriminated union now — it's the lowest-marginal-cost moment (we're already
+touching `types.ts` / `AppController.tsx` / `event-mapper.ts`), and a future `load_file`
+approval inherits it for free.
+
+**`types.ts`** — replace the two nullable slots with one union:
+
+```diff
++export type PendingApproval =
++    | { kind: 'edit';    edit: PendingEdit }
++    | { kind: 'install'; install: PendingInstall }
++    | { kind: 'script'; script: { code: string } };   // ← unblocks execute_script
+```
+
+> Minimal alternative (if Option C is deferred): keep `pendingReview` and just map
+> `script_proposed` onto it (`path: '(r script)'`, `diff: code`) so `DiffReview` renders the
+> script verbatim. That clears the **blocking** deadlock with the fewest lines; the union is
+> the cleaner end state. Either way **the `script_rejected` case below is mandatory.**
+
+**`event-mapper.ts`** — add the three missing cases (`script_proposed`, `script_rejected`,
+and the dropped `info` field from review §6). Shown against the Option-C union:
+
+```diff
++        case 'script_proposed':
++            return {
++                sideEffect: {
++                    pendingApproval: { kind: 'script', script: { code: event.data.code as string } },
++                    nextAppState: 'reviewing',
++                },
++            };
++
++        case 'script_rejected':
++            return { message: makeMessage('status', 'Skipped script') };
++
+         case 'status_update': {
+             const parts: string[] = [];
+             if (event.data.warning)   parts.push(`⚠ ${event.data.warning}`);
++            if (event.data.info)      parts.push(event.data.info as string);   // review §6: readFallbackFiles auto-load notice
+             if (event.data.plugins)   parts.push(`Plugins: ${event.data.plugins.join(', ')}`);
+             if (event.data.knowledge) parts.push(`Knowledge: ${event.data.knowledge.join(', ')}`);
+             if (parts.length === 0)   return {};
+             return { message: makeMessage('status', parts.join(' | ')) };
+         }
+```
+
+The existing `diff_proposed` / `install_proposed` cases set `pendingApproval` of kind `edit`
+/ `install` instead of the old `pendingReview` / `pendingInstall` fields.
+
+**`AppController.tsx`** — one `pendingApproval` state replaces the two; `handleReviewDecision`
+clears the single slot; the script view renders from `kind: 'script'`. The `onApproval`
+resolver mechanism ([AppController.tsx:88](../tyla/src/tui/controller/AppController.tsx#L88)) is
+**unchanged** — it already resolves whatever `handleReviewDecision` passes, so the tutor's
+`execute_script` approval rides the exact path the edit approval uses today.
+
+**Review §7 — `file_loaded` was never emitted.** The §6 table in the first draft listed a
+`file_loaded` handler, but `dispatchLoadFile` (§5c) emits **`text_output`** (already handled
+by the mapper). **Decided: no `file_loaded` event/handler** — the decision-doc flowchart was
+aspirational; `text_output` is correct for Phase 1. The table below is corrected accordingly.
+
+| TUI surface | Change |
+|-------------|--------|
+| `types.ts` | `PendingApproval` union (replaces `pendingReview`/`pendingInstall`) |
+| `event-mapper.ts` | NEW `script_proposed`, `script_rejected` cases; `info` added to `status_update`; `diff_proposed`/`install_proposed` retargeted to the union |
+| `AppController.tsx` | single `pendingApproval` state; script-kind render; resolver path unchanged |
+| ~~`file_loaded` handler~~ | **dropped** — `dispatchLoadFile` emits `text_output` (already handled) |
+
+### 6.2 Composition root — `infrastructure/bootstrap/agent-factory.ts`
 
 `ExecuteTutorUseCase` is constructed at
 [`agent-factory.ts:146`](../tyla/src/infrastructure/bootstrap/agent-factory.ts#L146). Every
@@ -736,7 +975,10 @@ handler), and a shared `stagingService`. Add the guard gateway next to the tutor
 thread the gate in:
 
 ```diff
-+const guardCheckGateway = getProfile(directory)
++// review §2: gate on the env flag AND a profile — not on profile alone. Default-off means
++// merging this changes nothing until TYLA_GUARD_PRECALL=1 is set (after backend WS-A).
++const guardPrecallEnabled = ['1', 'true'].includes((getEnv(ENV_VARS.GUARD_PRECALL) ?? '').toLowerCase());
++const guardCheckGateway = guardPrecallEnabled && getProfile(directory)
 +    ? new GuardCheckGateway((msg) => emit('status_update', { warning: msg }), directory)
 +    : undefined;
 
@@ -744,7 +986,7 @@ thread the gate in:
 -    { llm, registry, directory, emit, policyLoader: assignmentPolicyLoader, tutorChatGateway },
 +    { llm, registry, directory, emit, policyLoader: assignmentPolicyLoader,
 +      tutorChatGateway, guardCheckGateway,
-+      onApproval: approvalBus.approve.bind(approvalBus),
++      onApproval: approvalBus.approve.bind(approvalBus),   // same gate as instructionUseCase (line 128)
 +      diffEngine,
 +    },
      modeManager.getMode(),
@@ -752,13 +994,20 @@ thread the gate in:
 ```
 
 > **Do NOT pass the shared `stagingService`** (the one at line 129, used by
-> `instructionUseCase`). The tutor dispatch calls `stage()` then `applyEdit()` per action and
-> never drains; sharing the instance would let tutor-staged edits leak into the instruction
-> pipeline's `drainStagedEdits()`. Pass only `diffEngine` and let §5a's constructor build the
-> tutor its **own** `EditStagingService`.
+> `instructionUseCase`). The tutor dispatch stages per-action via the new `stageOnly()` (§5c)
+> — which never touches `_staged` — and applies immediately. Pass only `diffEngine` and let
+> §5a's constructor build the tutor its **own** `EditStagingService`; the instruction
+> pipeline's `drainStagedEdits()` then can never see a tutor-staged edit.
 >
-> `guardCheckGateway` is gated on `getProfile(directory)` exactly like `tutorChatGateway` —
-> both need the profile for `course_id` / `project_id` / `student_id`.
+> **Until WS-A (`guardPrecallEnabled === false`)** `guardCheckGateway` is `undefined`, so the
+> Option B path is dormant: `callGateway()`'s §5b early check returns the friendly
+> "backend not configured" error rather than dereferencing `undefined`. Existing
+> `tutorChatGateway`-only behaviour is untouched. **When WS-A ships**, set
+> `TYLA_GUARD_PRECALL=1` and the full guard→tutor→actions pipeline activates with no code
+> change.
+>
+> `onApproval` reuses `approvalBus` — the same bus `instructionUseCase` uses — so the tutor's
+> `edit_file` / `execute_script` approvals flow through the §6.1 TUI gate already in place.
 
 ---
 
@@ -766,11 +1015,13 @@ thread the gate in:
 
 | File | What |
 |------|------|
-| `tests/guard-check-gateway.test.ts` (new) | mock `axios.post`; assert `done`/`forbidden`/`unavailable` → correct `GuardCheckResult`; 403 missing-key path; `parseUsage` clamping |
-| `tests/tutor-chat-gateway.test.ts` | request body includes `guard_log_id` + `file_context`; `actions` filtered through `isTutorAction` (one valid + one malformed → length 1); `forbidden` carries no actions |
+| `tests/guard-check-gateway.test.ts` (new) | mock `axios.post`; assert `done`/`forbidden`/**`error`**/`unavailable` → correct `GuardCheckResult` (incl. the `error` branch carrying `message`, no `logId`); 401 missing-key path; `parseUsage` clamping |
+| `tests/tutor-chat-gateway.test.ts` | request body includes `guard_log_id` + `file_context`; `actions` filtered through `isTutorAction` (one valid + one malformed → length 1); `forbidden` **and `error`** carry no actions |
 | `tests/tutor-actions.test.ts` (new) | `isTutorAction` truth table for all three types + malformed patches |
-| `tests/execute-tutor-use-case.test.ts` | guard `forbidden` short-circuits (no tutor call); `done` → tutor called with `logId`; `edit_file` action → `onApproval` gate → `applyEdit` only when approved; `execute_script` rejected → no `r_exec`; usage = guard + tutor |
+| `tests/execute-tutor-use-case.test.ts` | guard `forbidden` short-circuits (no tutor call); guard **`error` → emits error, no tutor call, no log_id leaked**; tutor **`error` → emits error + retry, no dispatch**; `done` → tutor called with `logId`; `edit_file` action → `onApproval` gate → `applyEdit` only when approved; `execute_script` **rejected → `script_rejected`, no `r_exec`**; **no `guardCheckGateway` (flag off) → friendly thrown error, not `TypeError`**; usage = guard + tutor |
 | `tests/execute-tutor-use-case.test.ts` (file_context) | named file → `file_context` contains only that file (incl. a named `.pdf` — name-only path); **no name → `readFallbackFiles` loads top-N `rScripts` first**, skips `dataFiles`/`rData`/`documents`, stops at `MAX_CONTEXT_TOKENS`; empty workspace → listing-only string |
+| `tests/edit-staging-service.test.ts` | **`stageOnly()` does NOT push to `_staged`** (drain stays empty after a stage+apply); stores relative `path` + resolved `absPath`; `applyEdit` writes to `absPath` (tutor `directory`, not cwd) |
+| `tests/event-mapper.test.ts` | **`script_proposed` → `pendingApproval` kind `script` + `reviewing`** (the deadlock regression test); `script_rejected` → "Skipped script" status; `status_update.info` surfaces (review §6); `diff_proposed`/`install_proposed` produce the union variants |
 
 Mock class constructors with `vi.fn(function () { return {...}; })` (arrow fns can't be
 `new`-ed) — per the project testing note.
@@ -779,13 +1030,37 @@ Mock class constructors with `vi.fn(function () { return {...}; })` (arrow fns c
 
 ## 8. Sequencing
 
-1. **§2 + §3 + §4a/§4b + §5a–§5d** behind the gateway path — additive, safe to merge before
-   the backend is live (`actions` stays `[]`, `guard_log_id` is sent and ignored until WS-B).
-2. Backend WS-A green → flip `GuardCheckGateway` on (status enum). WS-B green → `actions[]`
+1. **§2 + §3 + §4a/§4b + §5a–§5d + §6.1** behind the gateway path — additive, safe to merge
+   before the backend is live (`actions` stays `[]`, `guard_log_id` is sent and ignored until
+   WS-B; `TYLA_GUARD_PRECALL` stays off so `callGateway` isn't reached). **§6.1 must land in
+   this batch** — without the `script_proposed` mapper case the first `execute_script` action
+   deadlocks the TUI (review §1).
+2. Backend WS-A green → set `TYLA_GUARD_PRECALL=1` (status enum live). WS-B green → `actions[]`
    start flowing; dispatch already handles them.
-3. **§5e** (fallback removal) as a follow-up commit once 1–2 are verified end-to-end.
+3. **§5e** (fallback removal) as a follow-up commit once 1–2 are verified end-to-end — land it
+   *with or after* §5b's early gateway check (review §4), never before.
 
-### Open / confirm
+### Open / confirm (resolved items from the review marked **RESOLVED**)
+- **Approval deadlock — RESOLVED in §6.1 (review §1, blocking).** `script_proposed` /
+  `script_rejected` mapper cases added; the two parallel slots consolidated into one
+  `pendingApproval` union (Option C).
+- **Guard config flag — RESOLVED in §3 + §6.2 (review §2, blocking).** `TYLA_GUARD_PRECALL`
+  env flag, default-off; gateway constructed only when flag + profile both present.
+- **`'error'` status — RESOLVED in §3/§4a/§5b (review §3).** Both gateways carry an `error`
+  variant; `callGateway()` shows the error + retry hint and never proceeds with a null
+  `log_id`.
+- **Unguarded `guardCheckGateway!` — RESOLVED in §5b/§5e (review §4).** Early
+  `if (!gateway) throw <friendly>` replaces the bare `!` assertion.
+- **`_staged` accumulation — RESOLVED in §5c (review §5).** New `stageOnly()` skips the queue.
+- **`status_update.info` dropped — RESOLVED in §6.1 (review §6).** `info` case added.
+- **`file_loaded` mismatch — RESOLVED in §5c/§6.1 (review §7).** Dropped; `dispatchLoadFile`
+  emits `text_output`.
+- **Path display — RESOLVED in §5c (review §9).** `stageOnly()` keeps the relative path for
+  the diff header, resolves `absPath` for apply.
+- **TutorResult `actions` — NOTED, intentionally out of scope (review §8).** Phase 1 does not
+  persist proposed actions in session history; TODO recorded in §5b for Phase 2 / Option A.
+
+Still genuinely open (no review finding — design choices):
 - **No-filename file_context — RESOLVED in §5d(iv).** `readFallbackFiles()` reads the top-N
   source files when nothing is named: `FALLBACK_FILE_LIMIT = 5`,
   `FALLBACK_GROUPS = ['rScripts', 'rMarkdown']`, budget-capped at `MAX_CONTEXT_TOKENS`.
@@ -799,9 +1074,6 @@ Mock class constructors with `vi.fn(function () { return {...}; })` (arrow fns c
 - **`load_file` in Option B:** single-roundtrip means there's no follow-up LLM turn to
   consume the loaded file, so it only surfaces content to the student. It earns its keep
   under Option A (multi-roundtrip) — keep the dispatch arm, low priority.
-- **Path display:** `dispatchEditFile` stages an **absolute** path (resolved against
-  `directory`). If you want the relative path shown in the diff header, thread `directory`
-  into `EditStagingService.stage()` like `stageFromArtifacts()` does. Cosmetic.
 
 ---
 
