@@ -145,11 +145,7 @@ export function buildAgentDeps(
         ? new TutorChatGateway((msg) => emit('status_update', { warning: msg }), directory)
         : undefined;
 
-    // Gate the Option B guard pre-call on the env flag AND a profile — not on profile alone.
-    // Default-off means merging this changes nothing until TYLA_GUARD_PRECALL=1 is set
-    // (after backend WS-A); flipping the flag activates guard→tutor→actions with no code change.
-    const guardPrecallEnabled = ['1', 'true'].includes((getEnv(ENV_VARS.GUARD_PRECALL) ?? '').toLowerCase());
-    const guardCheckGateway = guardPrecallEnabled && getProfile(directory)
+    const guardCheckGateway = getProfile(directory)
         ? new GuardCheckGateway((msg) => emit('status_update', { warning: msg }), directory)
         : undefined;
 

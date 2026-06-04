@@ -7,9 +7,9 @@
  *   buildFileContext → GuardCheckGateway.check → TutorChatGateway.send → dispatch actions[]
  *   behind the approval gate (edit_file / execute_script / load_file).
  *
- * Requires guardCheckGateway + tutorChatGateway (constructed when TYLA_GUARD_PRECALL=1 and a
- * profile exists). Without them, callGateway() surfaces a friendly "backend not configured"
- * error rather than failing silently.
+ * Requires guardCheckGateway + tutorChatGateway (constructed when a profile exists).
+ * Without them, callGateway() surfaces a friendly "backend not configured" error rather than
+ * failing silently.
  *
  * Returns TutorResult — the caller is responsible for persisting the turn.
  */
@@ -123,8 +123,7 @@ export class ExecuteTutorUseCase {
         // these checks, an undefined gateway throws a raw TypeError. Surface a clear
         // message instead.
         if (!this.deps.guardCheckGateway || !this.deps.tutorChatGateway) {
-            const msg = 'Tutor backend not configured — set a valid profile.json and '
-                + 'TYLA_GUARD_PRECALL=1, then restart tyla.';
+            const msg = 'Tutor backend not configured — set a valid profile.json and restart tyla.';
             this.deps.emit('error', { message: msg, phase: 'guard' });
             throw new Error(msg);
         }
