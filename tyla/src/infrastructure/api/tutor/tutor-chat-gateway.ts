@@ -4,6 +4,7 @@ import { SessionMessage } from '../../../shared/types/messages';
 import { TYLA_API } from '../../config/constants';
 import { buildTylaApiRequest } from '../shared/build-llm-headers';
 import { parseUsage, Usage } from '../shared/parse-usage';
+import { debugLog } from '../shared/debug-log';
 
 // ── Wire types ────────────────────────────────────────────────────────────────
 
@@ -44,17 +45,20 @@ export class TutorChatGateway {
     ): Promise<TutorChatResult> {
         const { profile, headers } = buildTylaApiRequest('tutor-api', this.directory);
 
+        const body = {
+            course_id:  profile.courseId,
+            project_id: profile.projectId,
+            student_id: profile.studentId,
+            guard_log_id: guardLogId,
+            prompt,
+            history,
+            ...(fileContext ? { file_context: fileContext } : {}),
+        };
+        debugLog('tutor', 'REQUEST', body);
+
         const response = await axios.post<TutorChatResponse>(
             `${this.baseUrl}/api/v1/tutor_chats`,
-            {
-                course_id:  profile.courseId,
-                project_id: profile.projectId,
-                student_id: profile.studentId,
-                guard_log_id: guardLogId,
-                prompt,
-                history,
-                ...(fileContext ? { file_context: fileContext } : {}),
-            },
+            body,
             {
                 timeout: this.timeout,
                 headers,
@@ -63,6 +67,7 @@ export class TutorChatGateway {
         );
 
         const data = response.data;
+        debugLog('tutor', 'RESPONSE', data);
 
         if (data.status === 'forbidden') {
             return {

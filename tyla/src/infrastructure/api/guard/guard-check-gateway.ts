@@ -10,6 +10,7 @@ import axios from 'axios';
 import { TYLA_API } from '../../config/constants';
 import { buildTylaApiRequest } from '../shared/build-llm-headers';
 import { parseUsage, Usage } from '../shared/parse-usage';
+import { debugLog } from '../shared/debug-log';
 
 // ── Wire types ────────────────────────────────────────────────────────────────
 
@@ -46,14 +47,17 @@ export class GuardCheckGateway {
     async check(prompt: string): Promise<GuardCheckResult> {
         const { profile, headers } = buildTylaApiRequest('guard-api', this.directory);
 
+        const body = {
+            course_id:  profile.courseId,
+            project_id: profile.projectId,
+            student_id: profile.studentId,
+            prompt,
+        };
+        debugLog('guard', 'REQUEST', body);
+
         const response = await axios.post<GuardCheckResponse>(
             `${this.baseUrl}/api/v1/guard_checks`,
-            {
-                course_id:  profile.courseId,
-                project_id: profile.projectId,
-                student_id: profile.studentId,
-                prompt,
-            },
+            body,
             {
                 timeout: this.timeout,
                 headers,
@@ -64,6 +68,7 @@ export class GuardCheckGateway {
         );
 
         const data = response.data;
+        debugLog('guard', 'RESPONSE', data);
 
         if (data.status === 'forbidden') {
             return { status: 'forbidden', logId: data.log_id, refusal: data.refusal ?? '', usage: parseUsage(data.usage) };
