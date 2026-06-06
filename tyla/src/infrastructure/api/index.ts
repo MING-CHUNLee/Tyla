@@ -22,7 +22,7 @@ export {
     createLLMController,
 } from './llm';
 
-export { RubyLogGateway, SessionLogGateway } from './logging';
+export { SessionLogGateway } from './logging';
 export { LogMapper } from './logging';
 export type { LogEvent, SessionSummary, LogPayload } from './logging';
 

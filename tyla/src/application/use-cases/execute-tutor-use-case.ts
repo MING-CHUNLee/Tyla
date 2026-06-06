@@ -1,13 +1,7 @@
 /**
  * Use Case: ExecuteTutorUseCase
  *
- * Tutor workflow mode pipeline — Option B only (decision doc §1: the offline fallback is
- * removed; the TUI cannot run without the backend):
- *
- *   buildFileContext → GuardCheckGateway.check → TutorChatGateway.send → dispatch actions[]
- *   behind the approval gate (edit_file / execute_script / load_file).
- *
- * Requires guardCheckGateway + tutorChatGateway (constructed when a profile exists).
+ * Tutor workflow mode pipeline (Option B). Requires guardCheckGateway + tutorChatGateway.
  * Without them, callGateway() surfaces a friendly "backend not configured" error rather than
  * failing silently.
  *
@@ -20,7 +14,6 @@ import { ToolRegistry } from '../orchestration/tool-registry';
 import { SessionMessage } from '../../shared/types/messages';
 import { estimateTokens } from '../prompts';
 import { PolicyLoader } from '../../infrastructure/config/policy-loader';
-import { WorkflowMode } from '../../infrastructure/config/settings';
 import { TutorChatGateway } from '../../infrastructure/api/tutor/tutor-chat-gateway';
 import { GuardCheckGateway } from '../../infrastructure/api/guard/guard-check-gateway';
 import { EditStagingService } from '../services/edit-staging-service';
@@ -28,8 +21,6 @@ import { DiffEngine } from '../services/diff-engine';
 import { IFileSystem } from '../../domain/types/file-system';
 import { LocalFileSystem } from '../../infrastructure/filesystem/local-file-system';
 import { TutorAction, EditPatch } from '../../shared/types/tutor-actions';
-
-export type TutorStyle = WorkflowMode;
 
 const MAX_CONTEXT_TOKENS = 6_000;
 
@@ -99,10 +90,7 @@ export class ExecuteTutorUseCase {
     private readonly fileSystem: IFileSystem;
     private readonly stagingService: EditStagingService;
 
-    constructor(
-        private readonly deps: ExecuteTutorDeps,
-        private readonly style: WorkflowMode,
-    ) {
+    constructor(private readonly deps: ExecuteTutorDeps) {
         this.policyLoader = deps.policyLoader ?? new PolicyLoader();
         this.fileSystem = deps.fileSystem ?? new LocalFileSystem();
         this.stagingService = deps.stagingService ??
@@ -110,8 +98,7 @@ export class ExecuteTutorUseCase {
     }
 
     async execute(instruction: string, history: SessionMessage[]): Promise<TutorResult> {
-        // Single path: the backend owns guard + prompt composition + the LLM call. The offline
-        // fallback was removed (decision doc §1). callGateway() guards against missing gateways.
+        // Backend owns guard + prompt composition + LLM call. callGateway() guards against missing gateways.
         return this.callGateway(instruction, history);
     }
 
@@ -297,8 +284,7 @@ export class ExecuteTutorUseCase {
         if (projectContext) parts.push(`## Project Context\n${projectContext}`);
         if (fileContents)   parts.push(`## File Contents\n${fileContents}`);
 
-        // Same MAX_CONTEXT_TOKENS cap the offline assemblePrompt() applies — enforced here
-        // so the frontend controls exactly what crosses the wire.
+        // Cap file context so the backend never receives an oversized payload.
         return this.truncateToTokenBudget(parts.join('\n\n'), MAX_CONTEXT_TOKENS);
     }
 

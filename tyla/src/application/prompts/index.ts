@@ -5,11 +5,6 @@
  */
 
 export {
-    buildJudgeSystemPrompt,
-    buildRefusalInstruction,
-} from './guard-agent';
-
-export {
     buildRoleSection,
     buildEnvironmentSection,
     buildCapabilitiesSection,

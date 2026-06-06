@@ -48,7 +48,6 @@ import { ExecuteRunUseCase } from '../../application/use-cases/execute-run-use-c
 import { ExecuteTutorUseCase } from '../../application/use-cases/execute-tutor-use-case';
 import { TutorChatGateway } from '../api/tutor/tutor-chat-gateway';
 import { GuardCheckGateway } from '../api/guard/guard-check-gateway';
-import { appendGuardLog } from '../persistence/guard-log-repository';
 import { getProfile } from '../config/profile';
 import { getEnv, ENV_VARS } from '../config';
 import { ExecuteInstallUseCase } from '../../application/use-cases/execute-install-use-case';
@@ -149,15 +148,12 @@ export function buildAgentDeps(
         ? new GuardCheckGateway((msg) => emit('status_update', { warning: msg }), directory)
         : undefined;
 
-    const tutorUseCase = new ExecuteTutorUseCase(
-        {
-            registry, directory, emit, policyLoader: assignmentPolicyLoader,
-            tutorChatGateway, guardCheckGateway,
-            onApproval: approvalBus.approve.bind(approvalBus),   // same gate as instructionUseCase
-            diffEngine,
-        },
-        modeManager.getMode(),
-    );
+    const tutorUseCase = new ExecuteTutorUseCase({
+        registry, directory, emit, policyLoader: assignmentPolicyLoader,
+        tutorChatGateway, guardCheckGateway,
+        onApproval: approvalBus.approve.bind(approvalBus),
+        diffEngine,
+    });
 
     const installUseCase = new ExecuteInstallUseCase({
         registry,
