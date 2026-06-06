@@ -12,7 +12,6 @@ import path from 'path';
 import { TurnUsage } from '../../domain/entities/conversation-turn';
 import { ToolRegistry } from '../orchestration/tool-registry';
 import { SessionMessage } from '../../shared/types/messages';
-import { estimateTokens } from '../prompts';
 import { PolicyLoader } from '../../infrastructure/config/policy-loader';
 import { TutorChatGateway } from '../../infrastructure/api/tutor/tutor-chat-gateway';
 import { GuardCheckGateway } from '../../infrastructure/api/guard/guard-check-gateway';
@@ -21,8 +20,6 @@ import { DiffEngine } from '../services/diff-engine';
 import { IFileSystem } from '../../domain/types/file-system';
 import { LocalFileSystem } from '../../infrastructure/filesystem/local-file-system';
 import { TutorAction, EditPatch } from '../../shared/types/tutor-actions';
-
-const MAX_CONTEXT_TOKENS = 6_000;
 
 const FALLBACK_FILE_LIMIT = 5;                     // read at most N when nothing is named
 // Code/source groups only. Data (rData / dataFiles / rProject) AND documents (PDFs etc.)
@@ -284,13 +281,7 @@ export class ExecuteTutorUseCase {
         if (projectContext) parts.push(`## Project Context\n${projectContext}`);
         if (fileContents)   parts.push(`## File Contents\n${fileContents}`);
 
-        // Cap file context so the backend never receives an oversized payload.
-        return this.truncateToTokenBudget(parts.join('\n\n'), MAX_CONTEXT_TOKENS);
-    }
-
-    private truncateToTokenBudget(text: string, budget: number): string {
-        if (estimateTokens(text) <= budget) return text;
-        return text.slice(0, budget * 4) + '\n[…truncated]';   // ~4 chars/token
+        return parts.join('\n\n');
     }
 
     private async readFallbackFiles(scannedFiles: ScannedFile[]): Promise<string> {
@@ -304,14 +295,8 @@ export class ExecuteTutorUseCase {
             info: `No file named — auto-loading ${targets.length} source file(s): ${targets.map(t => t.name).join(', ')}`,
         });
 
-        // Read one at a time, stop early once we'd exceed the context budget (avoid wasted reads).
-        let out = '';
-        for (const file of targets) {
-            const chunk = await this.readFiles([file]);
-            if (estimateTokens(out + chunk) > MAX_CONTEXT_TOKENS) break;
-            out += chunk;
-        }
-        return out;
+        const chunks = await Promise.all(targets.map(f => this.readFiles([f])));
+        return chunks.join('');
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
