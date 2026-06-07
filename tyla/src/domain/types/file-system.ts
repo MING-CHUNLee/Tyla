@@ -30,6 +30,13 @@ export interface IFileSystem {
 
     /** Returns basic metadata for a file or directory. Throws if path does not exist. */
     stat(filePath: string): FileStats;
+
+    /**
+     * Resolves filePath to its canonical absolute path, following symlinks and
+     * normalizing `.`/`..` segments. Throws if the path (or any symlink target
+     * along it) does not exist.
+     */
+    realpath(filePath: string): string;
 }
 
 export interface FileStats {

@@ -39,4 +39,8 @@ export class LocalFileSystem implements IFileSystem {
             isDirectory: s.isDirectory(),
         };
     }
+
+    realpath(filePath: string): string {
+        return fs.realpathSync(filePath);
+    }
 }
