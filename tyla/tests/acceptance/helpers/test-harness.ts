@@ -77,7 +77,7 @@ export function createHarness(opts: HarnessOpts): Harness {
     const registry   = new ToolRegistry();
 
     const stagingService  = new EditStagingService(fs, diffEngine);
-    const fileReadService = new FileReadService(fs);
+    const fileReadService = new FileReadService(fs, directory);
     const rRunner         = new RScriptRunner();
 
     registry.register(new FileScanTool(new DirectoryScanner()));

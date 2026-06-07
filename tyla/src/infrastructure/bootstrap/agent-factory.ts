@@ -78,7 +78,7 @@ export function buildAgentDeps(
     // stagingService is shared between FileEditTool (queues edits during ReAct)
     // and the instruction/solver use cases (drain the queue after the loop).
     const stagingService  = new EditStagingService(fs, diffEngine);
-    const fileReadService = new FileReadService(fs);
+    const fileReadService = new FileReadService(fs, directory);
     const rRunner         = new RScriptRunner();
 
     registry.register(new FileScanTool(new DirectoryScanner()));

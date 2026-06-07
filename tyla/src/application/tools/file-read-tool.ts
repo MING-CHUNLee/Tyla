@@ -20,7 +20,7 @@ export class FileReadTool implements AgentTool {
         parameters: {
             path: {
                 type: 'string',
-                description: 'The file path to read (absolute or relative to cwd)',
+                description: 'The file path to read (relative to the workspace root)',
                 required: true,
             },
         },
