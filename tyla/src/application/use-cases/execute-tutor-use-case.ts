@@ -21,6 +21,9 @@ import { FileContextBudget } from '../services/file-context-budget';
 import { IFileSystem } from '../../domain/types/file-system';
 import { LocalFileSystem } from '../../infrastructure/filesystem/local-file-system';
 import { TutorAction, EditPatch } from '../../shared/types/tutor-actions';
+import { ContinuationFileLoader } from '../services/continuation-file-loader';
+import { PathConfinement } from '../../domain/policies/path-confinement';
+import { extractPdfText } from '../../infrastructure/pdf/pdf-text-extractor';
 
 const FALLBACK_FILE_LIMIT = 5;                     // read at most N when nothing is named
 
@@ -37,6 +40,8 @@ const PER_TURN_FILE_CONTEXT_TOKEN_CAP = 2_200;     // base + loaded combined
 // Order = preference. THIS is the one-line seam for new languages: add 'pythonScripts'
 // once file_scan surfaces it.
 const FALLBACK_GROUPS = ['rScripts', 'rMarkdown'] as const;
+
+const MAX_CONTINUATIONS = 3;   // hard termination invariant (b3 §4.4, §8); lower to 2 after Phase 0
 
 type ScannedFile = { name: string; path: string; group: string };
 
@@ -95,12 +100,14 @@ export class ExecuteTutorUseCase {
     private readonly policyLoader: PolicyLoader;
     private readonly fileSystem: IFileSystem;
     private readonly stagingService: EditStagingService;
+    private readonly loader: ContinuationFileLoader;
 
     constructor(private readonly deps: ExecuteTutorDeps) {
         this.policyLoader = deps.policyLoader ?? new PolicyLoader();
         this.fileSystem = deps.fileSystem ?? new LocalFileSystem();
         this.stagingService = deps.stagingService ??
             new EditStagingService(this.fileSystem, deps.diffEngine ?? new DiffEngine());
+        this.loader = new ContinuationFileLoader(this.fileSystem, new PathConfinement(this.fileSystem), extractPdfText);
     }
 
     async execute(instruction: string, history: SessionMessage[]): Promise<TutorResult> {
@@ -122,7 +129,10 @@ export class ExecuteTutorUseCase {
         }
 
         // ── 1. file_context (reuses scan + read helpers) ───────────────────────
-        const fileContext = await this.buildFileContext(instruction);
+        // Single budget instance for the whole turn: base reads and B3 continuation
+        // loads draw from one shared pool (gap-list §C, b3 §2.3).
+        const budget = new FileContextBudget(PER_FILE_TOKEN_CAP, PER_TURN_FILE_CONTEXT_TOKEN_CAP);
+        const baseContext = await this.buildFileContext(instruction, budget);
 
         // ── 2. Guard pre-call ──────────────────────────────────────────────────
         this.deps.emit('phase_start', { phase: 'guard', description: 'Running safety check' });
@@ -148,43 +158,68 @@ export class ExecuteTutorUseCase {
             this.deps.emit('status_update', { warning: 'guard skipped: llm unavailable' });
         }
 
-        // ── 3. Tutor call ──────────────────────────────────────────────────────
-        this.deps.emit('phase_start', { phase: 'tutor', description: 'Calling tutor API' });
-        let result;
-        try {
-            result = await this.deps.tutorChatGateway.send(instruction, history, guard.logId, fileContext);
-        } catch (error) {
-            return this.failTutor('tutor', error);
-        }
+        // ── 3. B3 continuation loop (G1+G4+G5+G6+G9) ─────────────────────────
+        const resolved = new Map<string, 'loaded' | 'unavailable'>();
+        const loadedBlocks: string[] = [];
+        let usage = toTurnUsage(guard.usage);
 
-        if (result.status === 'forbidden') {
-            // guard_log_id rejected by the backend (missing/invalid/mismatch)
-            this.deps.emit('guard_blocked', { reason: 'guard_credential', phase: 'tutor' });
+        for (let i = 0; ; i++) {
+            const fileContext = loadedBlocks.length
+                ? `${baseContext}\n\n## Files Loaded On Request\n${loadedBlocks.join('\n')}`
+                : baseContext;
+
+            this.deps.emit('phase_start', { phase: 'tutor', description: i === 0 ? 'Calling tutor API' : `Continuation ${i}` });
+            let result;
+            try {
+                result = await this.deps.tutorChatGateway.send(instruction, history, guard.logId, fileContext);
+            } catch (error) {
+                return this.failTutor('tutor', error);
+            }
+            usage = addUsage(usage, toTurnUsage(result.usage));
+
+            if (result.status === 'forbidden') {
+                this.deps.emit('guard_blocked', { reason: 'guard_credential', phase: 'tutor' });
+                this.deps.emit('text_output', { content: result.content });
+                this.deps.emit('phase_end', { phase: 'tutor', success: true });
+                return { content: result.content, usage };
+            }
+            if (result.status === 'error') {
+                this.deps.emit('phase_end', { phase: 'tutor', success: false });
+                this.deps.emit('error', { message: `Tutor call failed: ${result.content || 'unknown error'}. Please try again.`, phase: 'tutor' });
+                return { content: result.content, usage };
+            }
+            if (result.guardSkipped) {
+                this.deps.emit('status_update', { warning: 'tutor: guard credential accepted under fail-open' });
+            }
+
+            // Collect and resolve new load_file actions (G4+G7)
+            const loads = result.actions.filter(
+                (a): a is Extract<TutorAction, { type: 'load_file' }> => a.type === 'load_file',
+            );
+            let madeProgress = false;
+            if (i < MAX_CONTINUATIONS) {
+                for (const a of loads) {
+                    const r = await this.loader.resolve(this.deps.directory, a.path, budget);
+                    if (resolved.has(r.key)) continue;
+                    resolved.set(r.key, r.ok ? 'loaded' : 'unavailable');
+                    loadedBlocks.push(r.block);
+                    madeProgress = true;
+                }
+            } else if (loads.length > 0) {
+                this.deps.emit('status_update', { warning: `Reached MAX_CONTINUATIONS (${MAX_CONTINUATIONS}) — stopping automatic file loading` });
+            }
+
+            if (madeProgress) {
+                this.deps.emit('continuation', { iteration: i + 1, loaded: [...resolved.keys()] });
+                continue;
+            }
+
+            // Terminal turn: emit text + dispatch (load_file already consumed by driver)
             this.deps.emit('text_output', { content: result.content });
             this.deps.emit('phase_end', { phase: 'tutor', success: true });
-            return { content: result.content, usage: addUsage(toTurnUsage(guard.usage), toTurnUsage(result.usage)) };
+            await this.dispatchActions(result.actions.filter(a => a.type !== 'load_file'));
+            return { content: result.content, usage };
         }
-        if (result.status === 'error') {
-            // server/judge error on the tutor leg — show + retry, no actions.
-            this.deps.emit('phase_end', { phase: 'tutor', success: false });
-            this.deps.emit('error', { message: `Tutor call failed: ${result.content || 'unknown error'}. Please try again.`, phase: 'tutor' });
-            return { content: result.content, usage: addUsage(toTurnUsage(guard.usage), toTurnUsage(result.usage)) };
-        }
-        if (result.guardSkipped) {
-            this.deps.emit('status_update', { warning: 'tutor: guard credential accepted under fail-open' });
-        }
-
-        this.deps.emit('text_output', { content: result.content });
-        this.deps.emit('phase_end', { phase: 'tutor', success: true });
-
-        // ── 4. Dispatch actions behind the approval gate ───────────────────────
-        await this.dispatchActions(result.actions);
-
-        // guard + tutor usages are disjoint (tutor no longer re-runs guard) — summing is safe.
-        // NOTE: `actions` are dispatched here and intentionally NOT returned on TutorResult —
-        // Phase 1 does not persist "which actions were proposed" in session history.
-        // TODO(Phase 2 / Option A): thread `actions` onto TutorResult if session replay needs them.
-        return { content: result.content, usage: addUsage(toTurnUsage(guard.usage), toTurnUsage(result.usage)) };
     }
 
     private failTutor(phase: 'guard' | 'tutor', error: unknown): never {
@@ -203,7 +238,6 @@ export class ExecuteTutorUseCase {
             switch (action.type) {
                 case 'edit_file':      await this.dispatchEditFile(action); break;
                 case 'execute_script': await this.dispatchExecuteScript(action); break;
-                case 'load_file':      await this.dispatchLoadFile(action); break;
             }
         }
 
@@ -266,23 +300,11 @@ export class ExecuteTutorUseCase {
         this.deps.emit('tool_result_r_exec', { data: res.data ?? { stdout: res.content } });
     }
 
-    private async dispatchLoadFile(action: { path: string }): Promise<void> {
-        const readTool = this.deps.registry.get(action.path.toLowerCase().endsWith('.pdf') ? 'pdf_read' : 'file_read');
-        if (!readTool) return;
-        const res = await readTool.execute({ path: action.path });
-        if (!res.isError) this.deps.emit('text_output', { content: res.content });
-    }
-
     // ── file_context assembly (Option B) ──────────────────────────────────────
 
-    private async buildFileContext(instruction: string): Promise<string> {
+    private async buildFileContext(instruction: string, budget: FileContextBudget): Promise<string> {
         this.deps.emit('phase_start', { phase: 'scan', description: 'Building file context' });
         const { projectContext, scannedFiles } = await this.buildProjectContext();   // (i)  file_scan
-
-        // One budget per turn (gap-list §C): base reads here — and, once the B3
-        // driver lands, continuation loads — draw down a single shared pool so the
-        // file_context can never overrun the backend's ~8K budget.
-        const budget = new FileContextBudget(PER_FILE_TOKEN_CAP, PER_TURN_FILE_CONTEXT_TOKEN_CAP);
 
         // (ii) explicit match first; (iv) fall back to the top-N source files if nothing named.
         let fileContents = await this.readRelevantFiles(instruction, scannedFiles, budget);
