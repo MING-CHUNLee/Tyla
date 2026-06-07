@@ -9,10 +9,10 @@
  */
 
 import path from 'path';
-import { PDFParse } from 'pdf-parse';
 import { AgentTool, ToolInput, ToolResult, ToolSchema } from '../../domain/types/agent-tool';
 import { IFileSystem } from '../../domain/types/file-system';
 import { MAX_FILE_CONTENT_CHARS } from '../../domain/policies/agent-file-policy';
+import { extractPdfText } from '../../infrastructure/pdf/pdf-text-extractor';
 
 export class PdfReadTool implements AgentTool {
     readonly name = 'pdf_read';
@@ -62,10 +62,7 @@ export class PdfReadTool implements AgentTool {
 
         let text: string;
         try {
-            const parser = new PDFParse({ data: buffer });
-            const result = await parser.getText();
-            text = result.text;
-            await parser.destroy();
+            text = await extractPdfText(buffer);
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             return { content: `Failed to parse PDF: ${msg}`, isError: true };
