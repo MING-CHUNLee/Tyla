@@ -12,6 +12,7 @@ import { GuardCheckGateway } from '../../../src/infrastructure/api/guard/guard-c
 import { TutorChatGateway } from '../../../src/infrastructure/api/tutor/tutor-chat-gateway';
 import { IFileSystem } from '../../../src/domain/types/file-system';
 import { DiffEngine } from '../../../src/application/services/diff-engine';
+import { estimateTokens } from '../../../src/application/prompts';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -194,5 +195,85 @@ describe('ExecuteTutorUseCase — Option B', () => {
         expect(events.some(e => e.type === 'script_rejected')).toBe(true);
         expect(rExec.execute).not.toHaveBeenCalled();
         expect(registryGet).not.toHaveBeenCalledWith('r_exec');
+    });
+});
+
+// ── file_context token budget (gap-list §C) ────────────────────────────────────
+// The base auto-read (readFallbackFiles → readFiles) must honour the same per-file
+// and per-turn token caps as a continuation load, or the base context alone trips
+// the backend's whole-or-drop on turn 0. PER_FILE_TOKEN_CAP=1200, per-turn=2200.
+
+/** ~`tokens` tokens of ASCII (estimateTokens ≈ chars/4 for English). */
+function bigContent(tokens: number): string {
+    return 'x'.repeat(tokens * 4);
+}
+
+/** Registry exposing file_scan (one rScripts group) + a file_read returning `contentFor(path)`. */
+function makeReadRegistry(
+    files: Array<{ name: string; path: string }>,
+    contentFor: (filePath: string) => string,
+) {
+    const fileScan = {
+        execute: vi.fn().mockResolvedValue({ content: 'scan summary', data: { files: { rScripts: files } } }),
+    };
+    const fileRead = {
+        execute: vi.fn(async ({ path }: { path: string }) => ({ isError: false, content: contentFor(path) })),
+    };
+    return (name: string) => (name === 'file_scan' ? fileScan : name === 'file_read' ? fileRead : undefined);
+}
+
+/** Pull the file_context (4th arg) handed to tutorChatGateway.send(). */
+function capturedFileContext(deps: ExecuteTutorDeps): string {
+    const send = deps.tutorChatGateway!.send as ReturnType<typeof vi.fn>;
+    return send.mock.calls[0][3] as string;
+}
+
+describe('ExecuteTutorUseCase — file_context budget (§C)', () => {
+    // Instruction with no filename match and no 'r' (avoids the single-letter ext
+    // match) so buildFileContext falls through to readFallbackFiles (top-5 auto-load).
+    const NO_MATCH = 'explain please';
+
+    it('caps a single oversized base file to the per-file budget', async () => {
+        const files = [{ name: 'f0.R', path: '/project/f0.R' }];
+        const { deps } = makeOptionB({ registryGet: makeReadRegistry(files, () => bigContent(5_000)) });
+        const useCase = new ExecuteTutorUseCase(deps, 'tutor-guide');
+
+        await useCase.execute(NO_MATCH, []);
+
+        const fileContext = capturedFileContext(deps);
+        expect(fileContext).toContain('[…truncated for token budget]');
+        // one file, capped per-file (~1200) — nowhere near the raw 5,000 tokens.
+        expect(estimateTokens(fileContext)).toBeLessThan(1_600);
+    });
+
+    it('refuses base files past the per-turn budget with a marker (not a silent drop)', async () => {
+        const files = Array.from({ length: 5 }, (_, i) => ({ name: `f${i}.R`, path: `/project/f${i}.R` }));
+        const { deps, events } = makeOptionB({ registryGet: makeReadRegistry(files, () => bigContent(1_000)) });
+        const useCase = new ExecuteTutorUseCase(deps, 'tutor-guide');
+
+        await useCase.execute(NO_MATCH, []);
+
+        const fileContext = capturedFileContext(deps);
+        // per-turn pool (~2200) keeps the whole base context bounded …
+        expect(estimateTokens(fileContext)).toBeLessThan(2_600);
+        // … and the overflow files are refused with a visible marker, not dropped.
+        expect(fileContext).toContain('[skipped: file-context token budget exhausted]');
+        expect(events.some(e => e.type === 'status_update'
+            && typeof e.data.warning === 'string'
+            && (e.data.warning as string).includes('token budget reached'))).toBe(true);
+    });
+
+    it('leaves small base files untouched (no truncation, no skip)', async () => {
+        const files = Array.from({ length: 3 }, (_, i) => ({ name: `f${i}.R`, path: `/project/f${i}.R` }));
+        const { deps } = makeOptionB({ registryGet: makeReadRegistry(files, p => `content of ${p}`) });
+        const useCase = new ExecuteTutorUseCase(deps, 'tutor-guide');
+
+        await useCase.execute(NO_MATCH, []);
+
+        const fileContext = capturedFileContext(deps);
+        expect(fileContext).not.toContain('[…truncated for token budget]');
+        expect(fileContext).not.toContain('[skipped: file-context token budget exhausted]');
+        expect(fileContext).toContain('content of /project/f0.R');
+        expect(fileContext).toContain('content of /project/f2.R');
     });
 });

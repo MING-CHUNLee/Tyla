@@ -17,11 +17,20 @@ import { TutorChatGateway } from '../../infrastructure/api/tutor/tutor-chat-gate
 import { GuardCheckGateway } from '../../infrastructure/api/guard/guard-check-gateway';
 import { EditStagingService } from '../services/edit-staging-service';
 import { DiffEngine } from '../services/diff-engine';
+import { FileContextBudget } from '../services/file-context-budget';
 import { IFileSystem } from '../../domain/types/file-system';
 import { LocalFileSystem } from '../../infrastructure/filesystem/local-file-system';
 import { TutorAction, EditPatch } from '../../shared/types/tutor-actions';
 
 const FALLBACK_FILE_LIMIT = 5;                     // read at most N when nothing is named
+
+// ── file_context token budget (gap-list §C) ───────────────────────────────────
+// The base auto-read must obey the same caps as a B3 continuation load, or the
+// base context alone overruns the backend's ~8K budget on turn 0. Calibrated for
+// GitHub Models: ~5K static base leaves ~3K, so file_context ≲ ~2.2K keeps room
+// for history/summary. Tune in §8 Phase 0 once measured.
+const PER_FILE_TOKEN_CAP = 1_200;                  // no single file dominates the pool
+const PER_TURN_FILE_CONTEXT_TOKEN_CAP = 2_200;     // base + loaded combined
 // Code/source groups only. Data (rData / dataFiles / rProject) AND documents (PDFs etc.)
 // are never auto-read — documents are large and the assignment policy may already carry
 // their content, so they load name-only (only when the student references them).
@@ -270,10 +279,15 @@ export class ExecuteTutorUseCase {
         this.deps.emit('phase_start', { phase: 'scan', description: 'Building file context' });
         const { projectContext, scannedFiles } = await this.buildProjectContext();   // (i)  file_scan
 
+        // One budget per turn (gap-list §C): base reads here — and, once the B3
+        // driver lands, continuation loads — draw down a single shared pool so the
+        // file_context can never overrun the backend's ~8K budget.
+        const budget = new FileContextBudget(PER_FILE_TOKEN_CAP, PER_TURN_FILE_CONTEXT_TOKEN_CAP);
+
         // (ii) explicit match first; (iv) fall back to the top-N source files if nothing named.
-        let fileContents = await this.readRelevantFiles(instruction, scannedFiles);
+        let fileContents = await this.readRelevantFiles(instruction, scannedFiles, budget);
         if (!fileContents) {
-            fileContents = await this.readFallbackFiles(scannedFiles);
+            fileContents = await this.readFallbackFiles(scannedFiles, budget);
         }
         this.deps.emit('phase_end', { phase: 'scan', success: true });
 
@@ -284,7 +298,7 @@ export class ExecuteTutorUseCase {
         return parts.join('\n\n');
     }
 
-    private async readFallbackFiles(scannedFiles: ScannedFile[]): Promise<string> {
+    private async readFallbackFiles(scannedFiles: ScannedFile[], budget: FileContextBudget): Promise<string> {
         const ranked = scannedFiles
             .filter(f => (FALLBACK_GROUPS as readonly string[]).includes(f.group))
             .sort((a, b) => FALLBACK_GROUPS.indexOf(a.group as never) - FALLBACK_GROUPS.indexOf(b.group as never));
@@ -295,8 +309,10 @@ export class ExecuteTutorUseCase {
             info: `No file named — auto-loading ${targets.length} source file(s): ${targets.map(t => t.name).join(', ')}`,
         });
 
-        const chunks = await Promise.all(targets.map(f => this.readFiles([f])));
-        return chunks.join('');
+        // Sequential (readFiles loops in order) so the shared per-turn budget is
+        // drawn down deterministically — overflow refuses the *later* files with a
+        // marker rather than racing a Promise.all. (gap-list §C)
+        return this.readFiles(targets, budget);
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -336,6 +352,7 @@ export class ExecuteTutorUseCase {
     private async readRelevantFiles(
         instruction: string,
         scannedFiles: ScannedFile[],
+        budget: FileContextBudget,
     ): Promise<string> {
         const instructionLower = instruction.toLowerCase();
         const readTargets = scannedFiles.filter(file => {
@@ -345,18 +362,28 @@ export class ExecuteTutorUseCase {
             return ext.length > 0 && instructionLower.includes(ext);     // "...the .R file..." → match
         });
 
-        return this.readFiles(readTargets);
+        return this.readFiles(readTargets, budget);
     }
 
-    /** Read a fixed set of files through file_read / pdf_read, concatenating their contents. */
-    private async readFiles(targets: Array<{ name: string; path: string }>): Promise<string> {
+    /**
+     * Read a fixed set of files through file_read / pdf_read, concatenating their
+     * contents under the shared per-turn token budget (gap-list §C): each file is
+     * capped per-file, and once the per-turn pool is spent the remaining files are
+     * refused with a visible marker rather than silently dropped.
+     */
+    private async readFiles(targets: Array<{ name: string; path: string }>, budget: FileContextBudget): Promise<string> {
         let out = '';
         for (const file of targets) {
+            if (budget.isExhausted()) {
+                out += budget.skipMarker(file.name);
+                this.deps.emit('status_update', { warning: `file_context token budget reached — skipped ${file.name}` });
+                continue;
+            }
             try {
                 const tool = this.deps.registry.get(file.name.toLowerCase().endsWith('.pdf') ? 'pdf_read' : 'file_read');
                 if (!tool) continue;
                 const result = await tool.execute({ path: file.path });
-                if (!result.isError) out += `### ${file.name}\n${result.content}\n\n`;
+                if (!result.isError) out += budget.take(file.name, result.content);
             } catch (error) {
                 this.deps.emit('status_update', {
                     warning: `Could not read file ${file.name}: ${error instanceof Error ? error.message : String(error)}`,
