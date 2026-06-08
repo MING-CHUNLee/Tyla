@@ -69,6 +69,9 @@ const AppView: React.FC<AppViewProps> = ({
                             diff: pendingApproval.script.code,
                             original: '',
                             proposed: pendingApproval.script.code,
+                            diffLines: pendingApproval.script.code
+                                .split('\n')
+                                .map(line => ({ kind: 'added' as const, text: `+ ${line}` })),
                         }}
                         onDecision={onReviewDecision}
                     />

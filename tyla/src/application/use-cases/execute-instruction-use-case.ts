@@ -215,6 +215,7 @@ export class ExecuteInstructionUseCase {
             this.deps.emit('diff_proposed', {
                 path: edit.path,
                 diff: edit.diff,
+                diffLines: edit.diffLines,
                 original: edit.original,
                 proposed: edit.content,
             });
@@ -222,6 +223,7 @@ export class ExecuteInstructionUseCase {
             const approved = await this.deps.onApproval({
                 path: edit.path,
                 diff: edit.diff,
+                diffLines: edit.diffLines,
                 original: edit.original,
                 proposed: edit.content,
             });

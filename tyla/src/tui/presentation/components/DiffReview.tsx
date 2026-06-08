@@ -14,6 +14,12 @@ interface DiffReviewProps {
     onDecision: (approved: boolean) => void;
 }
 
+const LINE_COLOR: Record<string, string> = {
+    added:   'green',
+    removed: 'red',
+    context: 'gray',
+};
+
 const DiffReview: React.FC<DiffReviewProps> = ({ edit, onDecision }) => {
     useInput((input: string, key: { return?: boolean; escape?: boolean }) => {
         const lower = input.toLowerCase();
@@ -30,8 +36,10 @@ const DiffReview: React.FC<DiffReviewProps> = ({ edit, onDecision }) => {
                 <Text bold color="yellow">
                     Review: {edit.path}
                 </Text>
-                <Box marginTop={1}>
-                    <Text>{edit.diff}</Text>
+                <Box marginTop={1} flexDirection="column">
+                    {(edit.diffLines ?? []).map((line, i) => (
+                        <Text key={i} color={LINE_COLOR[line.kind]}>{line.text}</Text>
+                    ))}
                 </Box>
                 <Box marginTop={1}>
                     <Text color="yellow" bold>

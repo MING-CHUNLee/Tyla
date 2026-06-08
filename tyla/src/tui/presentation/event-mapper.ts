@@ -114,10 +114,11 @@ export function mapAgentEventToMessage(event: AgentEvent): MappedEvent {
                     pendingApproval: {
                         kind: 'edit',
                         edit: {
-                            path:     edit.path,
-                            diff:     edit.diff,
-                            original: edit.original,
-                            proposed: edit.proposed,
+                            path:      edit.path,
+                            diff:      edit.diff,
+                            diffLines: edit.diffLines,
+                            original:  edit.original,
+                            proposed:  edit.proposed,
                         },
                     },
                     nextAppState: 'reviewing',

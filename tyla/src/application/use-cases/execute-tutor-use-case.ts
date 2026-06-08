@@ -58,7 +58,7 @@ export interface ExecuteTutorDeps {
     /** Option B pre-call. When present (with tutorChatGateway), runs the guard→tutor→actions pipeline. */
     guardCheckGateway?: GuardCheckGateway;
     /** Human-in-the-loop gate for edit_file / execute_script. Same contract as the edit pipeline. */
-    onApproval?: (edit: { path: string; diff: string; original: string; proposed: string }) => Promise<boolean>;
+    onApproval?: (edit: { path: string; diff: string; diffLines: import('../services/diff-engine').DiffLine[]; original: string; proposed: string }) => Promise<boolean>;
     /** Defaults built from fileSystem + diffEngine below. */
     stagingService?: EditStagingService;
     diffEngine?: DiffEngine;
@@ -268,13 +268,13 @@ export class ExecuteTutorUseCase {
         }
 
         this.deps.emit('diff_proposed', {
-            path: staged.staged.path, diff: staged.staged.diff,        // relative
+            path: staged.staged.path, diff: staged.staged.diff, diffLines: staged.staged.diffLines,
             original: staged.staged.original, proposed: staged.staged.content,
         });
 
         const approved = this.deps.onApproval
             ? await this.deps.onApproval({
-                path: staged.staged.path, diff: staged.staged.diff,
+                path: staged.staged.path, diff: staged.staged.diff, diffLines: staged.staged.diffLines,
                 original: staged.staged.original, proposed: staged.staged.content,
               })
             : false;
@@ -290,7 +290,7 @@ export class ExecuteTutorUseCase {
     private async dispatchExecuteScript(action: { code: string }): Promise<void> {
         this.deps.emit('script_proposed', { code: action.code });
         const approved = this.deps.onApproval
-            ? await this.deps.onApproval({ path: '(r script)', diff: action.code, original: '', proposed: action.code })
+            ? await this.deps.onApproval({ path: '(r script)', diff: action.code, diffLines: [], original: '', proposed: action.code })
             : false;
         if (!approved) { this.deps.emit('script_rejected', {}); return; }
 
@@ -402,10 +402,17 @@ export class ExecuteTutorUseCase {
                 continue;
             }
             try {
-                const tool = this.deps.registry.get(file.name.toLowerCase().endsWith('.pdf') ? 'pdf_read' : 'file_read');
-                if (!tool) continue;
-                const result = await tool.execute({ path: file.path });
-                if (!result.isError) out += budget.take(file.name, result.content);
+                // file.path from file_scan is absolute; PathConfinement requires relative paths,
+                // so normalize before passing to the loader (which handles PDF/binary/budget too).
+                const absPath = path.isAbsolute(file.path)
+                    ? file.path
+                    : path.resolve(this.deps.directory, file.path);
+                const relativePath = path.relative(this.deps.directory, absPath);
+                const resolution = await this.loader.resolve(this.deps.directory, relativePath, budget);
+                out += resolution.block;
+                if (!resolution.ok) {
+                    this.deps.emit('status_update', { warning: `Could not load ${file.name} for context` });
+                }
             } catch (error) {
                 this.deps.emit('status_update', {
                     warning: `Could not read file ${file.name}: ${error instanceof Error ? error.message : String(error)}`,

@@ -8,6 +8,7 @@ import {
     ScanResultVM,
     LibraryScanResultVM,
 } from '../../shared/view-models/index.js';
+import type { DiffLine } from '../../application/services/diff-engine.js';
 import { RExecResultVM, RInstallResultVM } from './view-models/index.js';
 
 export type MessageType =
@@ -59,6 +60,7 @@ export type AppState = 'idle' | 'processing' | 'reviewing';
 export interface PendingEdit {
     path: string;
     diff: string;
+    diffLines: DiffLine[];
     original: string;
     proposed: string;
 }

@@ -12,7 +12,7 @@
 
 import path from 'path';
 import { IFileSystem } from '../../domain/types/file-system';
-import { DiffEngine } from './diff-engine';
+import { DiffEngine, DiffLine } from './diff-engine';
 
 /** Type guard: true when e is a Node.js system error with a `.code` property. */
 function isNodeError(e: unknown): e is NodeJS.ErrnoException {
@@ -23,7 +23,8 @@ export interface StagedEdit {
     path: string;      // relative path as given by the LLM (shown in the diff header)
     content: string;   // proposed new content
     original: string;  // content that was on disk at staging time ('' for new files)
-    diff: string;      // coloured diff string ready for display
+    diff: string;      // coloured diff string for CLI display (chalk ANSI)
+    diffLines: DiffLine[];  // structured diff for TUI Ink rendering
     absPath?: string;  // set by stageOnly(): resolved target for applyEdit (tutor uses a base dir ≠ cwd)
 }
 
@@ -65,8 +66,9 @@ export class EditStagingService {
             };
         }
 
+        const diffLines = this.diffEngine.generateDiffLines(original, content);
         const diff = this.diffEngine.generateColoredDiff(original, content);
-        const staged: StagedEdit = { path: filePath, content, original, diff };
+        const staged: StagedEdit = { path: filePath, content, original, diff, diffLines };
         this._staged.push(staged);
         return { staged };
     }
@@ -94,8 +96,9 @@ export class EditStagingService {
             return { error: `No changes detected in ${path.basename(absPath)}.`, isHardError: false };
         }
 
+        const diffLines = this.diffEngine.generateDiffLines(original, content);
         const diff = this.diffEngine.generateColoredDiff(original, content);
-        return { staged: { path: relPath, content, original, diff, absPath } };   // not pushed
+        return { staged: { path: relPath, content, original, diff, diffLines, absPath } };   // not pushed
     }
 
     /**
@@ -132,6 +135,7 @@ export class EditStagingService {
                 content: artifact.content,
                 original,
                 diff: this.diffEngine.generateColoredDiff(original, artifact.content),
+                diffLines: this.diffEngine.generateDiffLines(original, artifact.content),
             });
         }
         return staged;

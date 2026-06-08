@@ -32,7 +32,7 @@ export interface Settings {
 export function getSettings(): Settings {
     const defaults: Settings = {
         statusBar: { items: [...DEFAULT_STATUS_ITEMS] },
-        workflowMode: 'default',
+        workflowMode: 'tutor-socratic',
     };
 
     try {

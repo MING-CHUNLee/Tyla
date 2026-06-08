@@ -44,7 +44,7 @@ export type AgentEvent =
     | { type: 'react_step';        data: { stepNumber: number; thought?: string; action?: { tool: string }; observation?: string } }
     | { type: 'text_output';       data: { content: string } }
     | { type: 'stream_token';      data: { token: string } }
-    | { type: 'diff_proposed';     data: { path: string; diff: string; original: string; proposed: string } }
+    | { type: 'diff_proposed';     data: { path: string; diff: string; diffLines: import('../services/diff-engine').DiffLine[]; original: string; proposed: string } }
     | { type: 'edit_applied';      data: { path: string } }
     | { type: 'edit_rejected';     data: { path: string } }
     | { type: 'script_proposed';   data: { code: string } }
@@ -80,6 +80,7 @@ export type AgentEventType = AgentEvent['type'];
 export interface ProposedEdit {
     path: string;
     diff: string;
+    diffLines: import('../services/diff-engine').DiffLine[];
     original: string;
     proposed: string;
 }
@@ -267,11 +268,19 @@ export class AgentService {
         // which reads the corresponding policy md file for the active mode.
         const mode = this.modeManager.getMode();
         if (mode !== 'default') {
-            return this.executeWithMode(
-                instruction,
-                () => this.tutorUseCase.execute(instruction, history),
-                result => result.content,
-            );
+            // Tutor use case emits its own error events (with phase) via failTutor() and re-throws
+            // to exit early. Use a dedicated path here so the re-throw is swallowed without a
+            // second errorless emission from executeWithMode.
+            let result;
+            try {
+                result = await this.tutorUseCase.execute(instruction, history);
+            } catch {
+                return; // error already emitted by tutorUseCase
+            }
+            this.session.addTurn(instruction, result.content, result.usage);
+            await this.repo.save(this.session);
+            this.emitTurnSaved(result.usage);
+            return;
         }
 
         const intent = await this.classifyIntent(instruction, history);
