@@ -23,6 +23,7 @@ import { buildInstructionAgentPrompt } from '../prompts/instruction-agent';
 import { KnowledgeBase } from '../services/knowledge-base';
 import { IKnowledgeRepository } from '../../domain/interfaces/i-knowledge-repository';
 import { EditStagingService, StagedEdit } from '../services/edit-staging-service';
+import { DiffLine } from '../services/diff-engine';
 
 type EmitFn = (type: string, data: Record<string, unknown>) => void;
 
@@ -32,7 +33,7 @@ export interface ExecuteInstructionDeps {
     diffEngine: DiffEngine;
     directory: string;
     /** Human-in-the-loop callback: returns true to apply the edit, false to skip. */
-    onApproval: (edit: { path: string; diff: string; original: string; proposed: string }) => Promise<boolean>;
+    onApproval: (edit: { path: string; diff: string; diffLines: DiffLine[]; original: string; proposed: string }) => Promise<boolean>;
     emit: EmitFn;
     /** Injected repository used to load the knowledge base at startup. */
     knowledgeRepo?: IKnowledgeRepository;

@@ -33,15 +33,15 @@ sequenceDiagram
     rect rgb(255, 255, 204)
         Note over Student,Tutor: 3 - B3 Continuation Loop (MAX_CONTINUATIONS=3)
         loop i=0 until madeProgress=false or MAX reached
-            UC->>Tutor: send(instruction, history=[], guard_log_id=67, fileContext)
-            Tutor-->>UC: status=done, actions=[edit_file hw2.R], content=
+            UC->>Tutor: send(instruction, history=(), guard_log_id=67, fileContext)
+            Tutor-->>UC: status=done, actions=(edit_file hw2.R), content=""
             Note right of Tutor: 4673 input tok / 69 output tok
             alt new load_file action found and i < MAX_CONTINUATIONS
                 UC->>FS: ContinuationFileLoader.resolve(requested path)
                 FS-->>UC: file block appended to loadedBlocks
-                Note right of UC: madeProgress=true → continue loop (emit continuation)
+                Note right of UC: madeProgress=true, continue loop (emit continuation)
             else no load_file actions (terminal turn)
-                Note right of UC: madeProgress=false → exit loop
+                Note right of UC: madeProgress=false, exit loop
             end
         end
     end
@@ -66,14 +66,11 @@ sequenceDiagram
 
 ## 流程說明
 
-### Phase 0 — Gateway Guard（程式碼 L125–129）
-呼叫前先確認 `guardCheckGateway` 和 `tutorChatGateway` 都已注入，否則拋出 friendly error，不走進後續流程。
-
-### Phase 1 — Build File Context（L134–135, L305–321）
-- `file_scan` 掃描工作目錄，回傳分類檔案清單
-- `readRelevantFiles()` 比對 instruction 中提到的檔名（case-insensitive）
-- 若無命中，`readFallbackFiles()` 自動讀取最多 5 個 rScripts/rMarkdown
-- 每個檔案受 `PER_FILE_TOKEN_CAP=1200 tok` 限制，整批受 `PER_TURN_FILE_CONTEXT_TOKEN_CAP=2200 tok` 限制
+### Phase 1 — Build File Context（L125, L295–321）
+- `file_scan` scans the working directory and returns a categorized file list.
+- `readRelevantFiles()` 比matches filenames mentioned in the instruction (case-insensitive).
+- If there are no matches,`readFallbackFiles()` automatically reads up to 5 rScripts/rMarkdown files.
+- Each file is limited by PER_FILE_TOKEN_CAP=1200 tok, and the entire batch is limited by PER_TURN_FILE_CONTEXT_TOKEN_CAP=2200 tok.
 
 ### Phase 2 — Guard Pre-call（L138–159）
 - `guardCheckGateway.check(instruction)` → 取得 `log_id`

@@ -30,7 +30,6 @@ import { RInstallTool } from '../../../src/application/tools/r-install-tool';
 import { ExecuteAskUseCase } from '../../../src/application/use-cases/execute-ask-use-case';
 import { ExecuteInstructionUseCase } from '../../../src/application/use-cases/execute-instruction-use-case';
 import { ExecuteRunUseCase } from '../../../src/application/use-cases/execute-run-use-case';
-import { ExecuteTutorUseCase } from '../../../src/application/use-cases/execute-tutor-use-case';
 import { ExecuteInstallUseCase } from '../../../src/application/use-cases/execute-install-use-case';
 import type { LLMGateway } from '../../../src/domain/types/llm-gateway';
 import type { SessionRepository } from '../../../src/infrastructure/persistence/session-repository';
@@ -91,7 +90,9 @@ export function createHarness(opts: HarnessOpts): Harness {
     const emit         = eventBus.emit.bind(eventBus);
     // No LLM injected — HistorySummarizer falls back to raw history (fine for tests).
     const summarizer   = new HistorySummarizer();
-    const modeManager  = new ModeManager();
+    // Explicit 'default' prevents getSettings() from loading 'tutor-socratic' and
+    // routing executeInstruction() into the tutor path (which has no gateways here).
+    const modeManager  = new ModeManager('default');
     const intentRouter = new IntentRouter(llm, emit);
 
     // ── Use cases ─────────────────────────────────────────────────────────────
@@ -103,9 +104,8 @@ export function createHarness(opts: HarnessOpts): Harness {
 
     const runUseCase = new ExecuteRunUseCase({ llm, registry, directory, emit });
 
-    const tutorUseCase = new ExecuteTutorUseCase(
-        { registry, directory, emit }, modeManager.getMode(),
-    );
+    // No profile configured in acceptance test harness → null (mirrors agent-factory behaviour).
+    const tutorUseCase = null;
     const installUseCase = new ExecuteInstallUseCase({ registry, emit });
 
     // ── Assembled deps ────────────────────────────────────────────────────────

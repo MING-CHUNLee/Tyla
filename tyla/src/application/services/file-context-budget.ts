@@ -52,6 +52,7 @@ export class FileContextBudget {
         const cap = Math.min(this.perFileCap, this.remaining);
         let body = content;
         if (estimateTokens(body) > cap) {
+            // ~4 chars/token for English/R source; may undercount dense code — recalibrate in Phase 0.
             body = body.slice(0, cap * 4) + '\n[…truncated for token budget]';
         }
         this.remaining -= estimateTokens(body);

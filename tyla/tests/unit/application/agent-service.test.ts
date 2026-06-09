@@ -252,6 +252,43 @@ describe('AgentService', () => {
         });
     });
 
+    describe('executeInstruction() — tutor null guard', () => {
+        it('emits error when tutorUseCase is null and mode is non-default', async () => {
+            const events: AgentEvent[] = [];
+            const eventBus = new EventBus();
+            const repo = makeMockRepo();
+
+            const deps: AgentServiceDeps = {
+                askUseCase:         { execute: vi.fn() } as never,
+                instructionUseCase: { execute: vi.fn() } as never,
+                runUseCase:         { execute: vi.fn() } as never,
+                tutorUseCase:       null,
+                installUseCase:     { execute: vi.fn() } as never,
+                intentRouter:       { classify: vi.fn() } as never,
+                summarizer: {
+                    shouldSummarize: vi.fn().mockReturnValue(false),
+                    summarize: vi.fn().mockResolvedValue([]),
+                } as never,
+                pluginLoader:  { loadAll: async () => [] },
+                modeManager:   new ModeManager('tutor-guide'),
+                repo,
+                initialModel:  'claude-test',
+                eventBus,
+            };
+
+            const service = new AgentService(
+                { directory: '/fake/project' },
+                (event) => events.push(event),
+                deps,
+            );
+            await service.initialize();
+            await service.executeInstruction('help me');
+
+            const err = events.find(e => e.type === 'error');
+            expect(err?.data.message).toMatch(/backend not configured/i);
+        });
+    });
+
     describe('handleSlashCommand()', () => {
         it('/status returns session info string', async () => {
             const { service } = makeService();

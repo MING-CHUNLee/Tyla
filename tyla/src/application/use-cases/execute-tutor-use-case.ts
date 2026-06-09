@@ -1,9 +1,9 @@
 /**
  * Use Case: ExecuteTutorUseCase
  *
- * Tutor workflow mode pipeline (Option B). Requires guardCheckGateway + tutorChatGateway.
- * Without them, callGateway() surfaces a friendly "backend not configured" error rather than
- * failing silently.
+ * Tutor workflow mode pipeline (Option B).
+ * guardCheckGateway and tutorChatGateway are required — the factory must not construct
+ * this use case unless both gateways are available.
  *
  * Returns TutorResult — the caller is responsible for persisting the turn.
  */
@@ -53,10 +53,10 @@ export interface ExecuteTutorDeps {
     emit: EmitFn;
     /** Injected loader — allows assignment-specific policy overlay without subclassing. */
     policyLoader?: PolicyLoader;
-    /** When present, delegates the full guard+tutor pipeline to the backend API. */
-    tutorChatGateway?: TutorChatGateway;
-    /** Option B pre-call. When present (with tutorChatGateway), runs the guard→tutor→actions pipeline. */
-    guardCheckGateway?: GuardCheckGateway;
+    /** Delegates the full guard+tutor pipeline to the backend API. */
+    tutorChatGateway: TutorChatGateway;
+    /** Option B pre-call. Runs the guard→tutor→actions pipeline. */
+    guardCheckGateway: GuardCheckGateway;
     /** Human-in-the-loop gate for edit_file / execute_script. Same contract as the edit pipeline. */
     onApproval?: (edit: { path: string; diff: string; diffLines: import('../services/diff-engine').DiffLine[]; original: string; proposed: string }) => Promise<boolean>;
     /** Defaults built from fileSystem + diffEngine below. */
@@ -118,16 +118,6 @@ export class ExecuteTutorUseCase {
     // ── Option B orchestration ────────────────────────────────────────────────
 
     private async callGateway(instruction: string, history: SessionMessage[]): Promise<TutorResult> {
-        // ── 0. Guard the gateways ──────────────────────────────────────────────
-        // After §5e removes the offline path, execute() calls straight here. Without
-        // these checks, an undefined gateway throws a raw TypeError. Surface a clear
-        // message instead.
-        if (!this.deps.guardCheckGateway || !this.deps.tutorChatGateway) {
-            const msg = 'Tutor backend not configured — set a valid profile.json and restart tyla.';
-            this.deps.emit('error', { message: msg, phase: 'guard' });
-            throw new Error(msg);
-        }
-
         // ── 1. file_context (reuses scan + read helpers) ───────────────────────
         // Single budget instance for the whole turn: base reads and B3 continuation
         // loads draw from one shared pool (gap-list §C, b3 §2.3).
@@ -210,7 +200,11 @@ export class ExecuteTutorUseCase {
             }
 
             if (madeProgress) {
-                this.deps.emit('continuation', { iteration: i + 1, loaded: [...resolved.keys()] });
+                this.deps.emit('continuation', {
+                    iteration: i + 1,
+                    loaded: [...resolved.keys()],
+                    intermediateContent: result.content,
+                });
                 continue;
             }
 
@@ -388,10 +382,11 @@ export class ExecuteTutorUseCase {
     }
 
     /**
-     * Read a fixed set of files through file_read / pdf_read, concatenating their
-     * contents under the shared per-turn token budget (gap-list §C): each file is
-     * capped per-file, and once the per-turn pool is spent the remaining files are
-     * refused with a visible marker rather than silently dropped.
+     * Read a fixed set of files through ContinuationFileLoader.resolve(), concatenating
+     * their contents under the shared per-turn token budget (gap-list §C). Each file is
+     * capped per-file; once the per-turn pool is spent the remaining files are refused
+     * with a visible marker rather than silently dropped. PDF, binary, and symlink-escape
+     * checks are all handled inside the loader.
      */
     private async readFiles(targets: Array<{ name: string; path: string }>, budget: FileContextBudget): Promise<string> {
         let out = '';

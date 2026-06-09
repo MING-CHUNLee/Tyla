@@ -66,6 +66,7 @@ export type AgentEvent =
     | { type: 'tool_result_library';  data: { data: unknown } }
     | { type: 'tool_result_r_exec';   data: { data: unknown } }
     | { type: 'tool_result_r_install'; data: { data: unknown } }
+    | { type: 'continuation';     data: { iteration: number; loaded: string[]; intermediateContent: string } }
     | { type: 'guard_blocked';    data: { reason: string; phase: string } }
     | { type: 'install_proposed'; data: {
         toInstall: string[];
@@ -119,7 +120,7 @@ export interface AgentServiceDeps {
     askUseCase: ExecuteAskUseCase;
     instructionUseCase: ExecuteInstructionUseCase;
     runUseCase: ExecuteRunUseCase;
-    tutorUseCase: ExecuteTutorUseCase;
+    tutorUseCase: ExecuteTutorUseCase | null;
     installUseCase: ExecuteInstallUseCase;
     // ── Application services ──────────────────────────────────────────────────
     intentRouter: IntentRouter;
@@ -153,7 +154,7 @@ export class AgentService {
     private readonly askUseCase: ExecuteAskUseCase;
     private readonly instructionUseCase: ExecuteInstructionUseCase;
     private readonly runUseCase: ExecuteRunUseCase;
-    private readonly tutorUseCase: ExecuteTutorUseCase;
+    private readonly tutorUseCase: ExecuteTutorUseCase | null;
     private readonly installUseCase: ExecuteInstallUseCase;
     private readonly modeManager: ModeManager;
     private readonly slashRouter: SlashCommandRouter;
@@ -268,6 +269,10 @@ export class AgentService {
         // which reads the corresponding policy md file for the active mode.
         const mode = this.modeManager.getMode();
         if (mode !== 'default') {
+            if (!this.tutorUseCase) {
+                this.emit({ type: 'error', data: { message: 'Tutor backend not configured — set a valid profile.json and restart tyla.', phase: 'guard' } });
+                return;
+            }
             // Tutor use case emits its own error events (with phase) via failTutor() and re-throws
             // to exit early. Use a dedicated path here so the re-throw is swallowed without a
             // second errorless emission from executeWithMode.

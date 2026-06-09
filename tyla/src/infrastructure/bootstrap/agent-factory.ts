@@ -99,7 +99,7 @@ export function buildAgentDeps(
 
     // Bind approval gates immediately (they come from the presentation layer
     // and are available at factory call time).
-    approvalBus.bind(onApproval);
+    approvalBus.bind((edit) => onApproval(edit));
     if (onInstallApproval) installApprovalBus.bind(onInstallApproval);
 
     const emit = eventBus.emit.bind(eventBus);
@@ -140,20 +140,25 @@ export function buildAgentDeps(
         ? new PolicyLoader(undefined, assignmentDir)
         : undefined;
 
-    const tutorChatGateway = getProfile(directory)
+    const profile = getProfile(directory);
+
+    const tutorChatGateway = profile
         ? new TutorChatGateway((msg) => emit('status_update', { warning: msg }), directory)
         : undefined;
 
-    const guardCheckGateway = getProfile(directory)
+    const guardCheckGateway = profile
         ? new GuardCheckGateway((msg) => emit('status_update', { warning: msg }), directory)
         : undefined;
 
-    const tutorUseCase = new ExecuteTutorUseCase({
-        registry, directory, emit, policyLoader: assignmentPolicyLoader,
-        tutorChatGateway, guardCheckGateway,
-        onApproval: approvalBus.approve.bind(approvalBus),
-        diffEngine,
-    });
+    const tutorUseCase = profile
+        ? new ExecuteTutorUseCase({
+                registry, directory, emit, policyLoader: assignmentPolicyLoader,
+                tutorChatGateway: tutorChatGateway!,
+                guardCheckGateway: guardCheckGateway!,
+                onApproval: approvalBus.approve.bind(approvalBus),
+                diffEngine,
+            })
+        : null;
 
     const installUseCase = new ExecuteInstallUseCase({
         registry,

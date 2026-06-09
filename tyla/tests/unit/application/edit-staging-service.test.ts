@@ -25,6 +25,7 @@ function makeMockFs(overrides: Partial<IFileSystem> = {}): IFileSystem {
 function makeMockDiff(): DiffEngine {
     return {
         generateColoredDiff: vi.fn().mockReturnValue('+ new line\n- old line\n'),
+        generateDiffLines:   vi.fn().mockReturnValue([]),
     } as unknown as DiffEngine;
 }
 

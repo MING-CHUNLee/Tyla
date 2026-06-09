@@ -5,6 +5,7 @@
  * gateways. Mock gateways are injected via deps — no axios / network.
  */
 
+import path from 'path';
 import { describe, it, expect, vi } from 'vitest';
 import { ExecuteTutorUseCase, ExecuteTutorDeps } from '../../../src/application/use-cases/execute-tutor-use-case';
 import { ToolRegistry } from '../../../src/application/orchestration/tool-registry';
@@ -24,17 +25,21 @@ function makeTutor(result: unknown) {
 }
 function makeFs(overrides: Partial<IFileSystem> = {}): IFileSystem {
     return {
-        exists: vi.fn().mockReturnValue(true),
-        read: vi.fn().mockReturnValue('old code'),
-        readBuffer: vi.fn(),
-        write: vi.fn(),
-        mkdir: vi.fn(),
-        stat: vi.fn(),
+        exists:    vi.fn().mockReturnValue(true),
+        read:      vi.fn().mockReturnValue('old code'),
+        readBuffer: vi.fn().mockReturnValue(Buffer.from('old code')),
+        write:     vi.fn(),
+        mkdir:     vi.fn(),
+        stat:      vi.fn(),
+        realpath:  vi.fn().mockImplementation((p: string) => path.resolve(p)),
         ...overrides,
     } as unknown as IFileSystem;
 }
 function makeDiff(): DiffEngine {
-    return { generateColoredDiff: vi.fn().mockReturnValue('coloured-diff') } as unknown as DiffEngine;
+    return {
+        generateColoredDiff: vi.fn().mockReturnValue('coloured-diff'),
+        generateDiffLines:   vi.fn().mockReturnValue([]),
+    } as unknown as DiffEngine;
 }
 
 const GUARD_DONE = { status: 'done', logId: 42, guardSkipped: false, usage: { inputTokens: 1, outputTokens: 2 } };
@@ -45,7 +50,6 @@ function makeOptionB(overrides: {
     onApproval?: (e: unknown) => Promise<boolean>;
     registryGet?: (name: string) => unknown;
     fileSystem?: IFileSystem;
-    omitGuardGateway?: boolean;
 } = {}) {
     const events: Array<{ type: string; data: Record<string, unknown> }> = [];
     const emit = (type: string, data: Record<string, unknown>) => events.push({ type, data });
@@ -57,7 +61,7 @@ function makeOptionB(overrides: {
         registry,
         directory: '/project',
         emit,
-        guardCheckGateway: overrides.omitGuardGateway ? undefined : makeGuard(overrides.guard ?? GUARD_DONE),
+        guardCheckGateway: makeGuard(overrides.guard ?? GUARD_DONE),
         tutorChatGateway: makeTutor(overrides.tutor ?? {
             status: 'done', logId: 7, content: 'Here is a hint', actions: [],
             guardSkipped: false, usage: { inputTokens: 3, outputTokens: 4 },
@@ -73,22 +77,11 @@ function makeOptionB(overrides: {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('ExecuteTutorUseCase — Option B', () => {
-    it('throws a friendly error (not a TypeError) when the guard gateway is absent', async () => {
-        const { deps, events } = makeOptionB({ omitGuardGateway: true });
-        const useCase = new ExecuteTutorUseCase(deps, 'tutor-guide');
-
-        await expect(useCase.execute('help', [])).rejects.toThrow(/backend not configured/i);
-
-        expect((deps.tutorChatGateway!.send as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
-        const err = events.find(e => e.type === 'error');
-        expect(err?.data.message).toMatch(/backend not configured/i);
-    });
-
     it('guard forbidden short-circuits before the tutor call', async () => {
         const { deps, events } = makeOptionB({
             guard: { status: 'forbidden', logId: 1, refusal: 'Not allowed.', usage: { inputTokens: 1, outputTokens: 0 } },
         });
-        const useCase = new ExecuteTutorUseCase(deps, 'tutor-guide');
+        const useCase = new ExecuteTutorUseCase(deps);
 
         const result = await useCase.execute('do my homework', []);
 
@@ -101,7 +94,7 @@ describe('ExecuteTutorUseCase — Option B', () => {
         const { deps, events } = makeOptionB({
             guard: { status: 'error', message: 'judge down', usage: { inputTokens: 0, outputTokens: 0 } },
         });
-        const useCase = new ExecuteTutorUseCase(deps, 'tutor-guide');
+        const useCase = new ExecuteTutorUseCase(deps);
 
         await useCase.execute('help', []);
 
@@ -114,7 +107,7 @@ describe('ExecuteTutorUseCase — Option B', () => {
         const { deps, events } = makeOptionB({
             tutor: { status: 'error', logId: 7, content: 'boom', usage: { inputTokens: 1, outputTokens: 1 } },
         });
-        const useCase = new ExecuteTutorUseCase(deps, 'tutor-guide');
+        const useCase = new ExecuteTutorUseCase(deps);
 
         await useCase.execute('help', []);
 
@@ -125,7 +118,7 @@ describe('ExecuteTutorUseCase — Option B', () => {
 
     it('done path calls the tutor with the guard logId and sums usage', async () => {
         const { deps, events } = makeOptionB();
-        const useCase = new ExecuteTutorUseCase(deps, 'tutor-guide');
+        const useCase = new ExecuteTutorUseCase(deps);
 
         const result = await useCase.execute('explain recursion', []);
 
@@ -148,7 +141,7 @@ describe('ExecuteTutorUseCase — Option B', () => {
             onApproval: vi.fn().mockResolvedValue(true),
             fileSystem,
         });
-        const useCase = new ExecuteTutorUseCase(deps, 'tutor-guide');
+        const useCase = new ExecuteTutorUseCase(deps);
 
         await useCase.execute('fix my code', []);
 
@@ -168,7 +161,7 @@ describe('ExecuteTutorUseCase — Option B', () => {
             onApproval: vi.fn().mockResolvedValue(false),
             fileSystem,
         });
-        const useCase = new ExecuteTutorUseCase(deps, 'tutor-guide');
+        const useCase = new ExecuteTutorUseCase(deps);
 
         await useCase.execute('fix my code', []);
 
@@ -187,7 +180,7 @@ describe('ExecuteTutorUseCase — Option B', () => {
             onApproval: vi.fn().mockResolvedValue(false),
             registryGet: (name: string) => (name === 'r_exec' ? rExec : undefined),
         });
-        const useCase = new ExecuteTutorUseCase(deps, 'tutor-guide');
+        const useCase = new ExecuteTutorUseCase(deps);
 
         await useCase.execute('run my script', []);
 
@@ -208,18 +201,26 @@ function bigContent(tokens: number): string {
     return 'x'.repeat(tokens * 4);
 }
 
-/** Registry exposing file_scan (one rScripts group) + a file_read returning `contentFor(path)`. */
+/**
+ * Registry exposing file_scan (one rScripts group) paired with a fileSystem whose
+ * readBuffer uses `contentFor(canonicalPath)`.  ContinuationFileLoader reads files
+ * via fileSystem.readBuffer — NOT via the file_read tool — so the fileSystem mock
+ * is the correct injection point for budget tests.
+ */
 function makeReadRegistry(
     files: Array<{ name: string; path: string }>,
     contentFor: (filePath: string) => string,
-) {
+): { registryGet: (name: string) => unknown; fileSystem: IFileSystem } {
     const fileScan = {
         execute: vi.fn().mockResolvedValue({ content: 'scan summary', data: { files: { rScripts: files } } }),
     };
-    const fileRead = {
-        execute: vi.fn(async ({ path }: { path: string }) => ({ isError: false, content: contentFor(path) })),
+    const fileSystem = makeFs({
+        readBuffer: vi.fn().mockImplementation((p: string) => Buffer.from(contentFor(p))),
+    });
+    return {
+        registryGet: (name: string) => (name === 'file_scan' ? fileScan : undefined),
+        fileSystem,
     };
-    return (name: string) => (name === 'file_scan' ? fileScan : name === 'file_read' ? fileRead : undefined);
 }
 
 /** Pull the file_context (4th arg) handed to tutorChatGateway.send(). */
@@ -235,8 +236,8 @@ describe('ExecuteTutorUseCase — file_context budget (§C)', () => {
 
     it('caps a single oversized base file to the per-file budget', async () => {
         const files = [{ name: 'f0.R', path: '/project/f0.R' }];
-        const { deps } = makeOptionB({ registryGet: makeReadRegistry(files, () => bigContent(5_000)) });
-        const useCase = new ExecuteTutorUseCase(deps, 'tutor-guide');
+        const { deps } = makeOptionB(makeReadRegistry(files, () => bigContent(5_000)));
+        const useCase = new ExecuteTutorUseCase(deps);
 
         await useCase.execute(NO_MATCH, []);
 
@@ -248,8 +249,8 @@ describe('ExecuteTutorUseCase — file_context budget (§C)', () => {
 
     it('refuses base files past the per-turn budget with a marker (not a silent drop)', async () => {
         const files = Array.from({ length: 5 }, (_, i) => ({ name: `f${i}.R`, path: `/project/f${i}.R` }));
-        const { deps, events } = makeOptionB({ registryGet: makeReadRegistry(files, () => bigContent(1_000)) });
-        const useCase = new ExecuteTutorUseCase(deps, 'tutor-guide');
+        const { deps, events } = makeOptionB(makeReadRegistry(files, () => bigContent(1_000)));
+        const useCase = new ExecuteTutorUseCase(deps);
 
         await useCase.execute(NO_MATCH, []);
 
@@ -265,15 +266,16 @@ describe('ExecuteTutorUseCase — file_context budget (§C)', () => {
 
     it('leaves small base files untouched (no truncation, no skip)', async () => {
         const files = Array.from({ length: 3 }, (_, i) => ({ name: `f${i}.R`, path: `/project/f${i}.R` }));
-        const { deps } = makeOptionB({ registryGet: makeReadRegistry(files, p => `content of ${p}`) });
-        const useCase = new ExecuteTutorUseCase(deps, 'tutor-guide');
+        const { deps } = makeOptionB(makeReadRegistry(files, p => `content of ${p}`));
+        const useCase = new ExecuteTutorUseCase(deps);
 
         await useCase.execute(NO_MATCH, []);
 
         const fileContext = capturedFileContext(deps);
         expect(fileContext).not.toContain('[…truncated for token budget]');
         expect(fileContext).not.toContain('[skipped: file-context token budget exhausted]');
-        expect(fileContext).toContain('content of /project/f0.R');
-        expect(fileContext).toContain('content of /project/f2.R');
+        // path.resolve normalises the fake POSIX root to the platform canonical form
+        expect(fileContext).toContain(`content of ${path.resolve('/project', 'f0.R')}`);
+        expect(fileContext).toContain(`content of ${path.resolve('/project', 'f2.R')}`);
     });
 });

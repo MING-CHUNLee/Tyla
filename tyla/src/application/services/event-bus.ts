@@ -12,7 +12,7 @@
 
 type EmitFn = (type: string, data: Record<string, unknown>) => void;
 
-export type ApprovalCb = (edit: { path: string; diff: string; original: string; proposed: string }) => Promise<boolean>;
+export type ApprovalCb = (edit: { path: string; diff: string; diffLines: import('./diff-engine').DiffLine[]; original: string; proposed: string }) => Promise<boolean>;
 export type InstallApprovalCb = (plan: { toInstall: string[]; alreadyInstalled: string[]; blocked: Array<{ name: string; reason: string }>; warnings: Array<{ name: string; message: string }> }) => Promise<boolean>;
 
 // ── EventBus ──────────────────────────────────────────────────────────────────
