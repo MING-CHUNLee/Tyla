@@ -12,7 +12,6 @@ import path from 'path';
 import { TurnUsage } from '../../domain/entities/conversation-turn';
 import { ToolRegistry } from '../orchestration/tool-registry';
 import { SessionMessage } from '../../shared/types/messages';
-import { PolicyLoader } from '../../infrastructure/config/policy-loader';
 import { TutorChatGateway } from '../../infrastructure/api/tutor/tutor-chat-gateway';
 import { GuardCheckGateway } from '../../infrastructure/api/guard/guard-check-gateway';
 import { EditStagingService } from '../services/edit-staging-service';
@@ -51,9 +50,7 @@ export interface ExecuteTutorDeps {
     registry: ToolRegistry;
     directory: string;
     emit: EmitFn;
-    /** Injected loader — allows assignment-specific policy overlay without subclassing. */
-    policyLoader?: PolicyLoader;
-    /** Delegates the full guard+tutor pipeline to the backend API. */
+/** Delegates the full guard+tutor pipeline to the backend API. */
     tutorChatGateway: TutorChatGateway;
     /** Option B pre-call. Runs the guard→tutor→actions pipeline. */
     guardCheckGateway: GuardCheckGateway;
@@ -97,13 +94,11 @@ function addUsage(a: TurnUsage, b: TurnUsage): TurnUsage {
 // ── ExecuteTutorUseCase ───────────────────────────────────────────────────────
 
 export class ExecuteTutorUseCase {
-    private readonly policyLoader: PolicyLoader;
     private readonly fileSystem: IFileSystem;
     private readonly stagingService: EditStagingService;
     private readonly loader: ContinuationFileLoader;
 
     constructor(private readonly deps: ExecuteTutorDeps) {
-        this.policyLoader = deps.policyLoader ?? new PolicyLoader();
         this.fileSystem = deps.fileSystem ?? new LocalFileSystem();
         this.stagingService = deps.stagingService ??
             new EditStagingService(this.fileSystem, deps.diffEngine ?? new DiffEngine());
