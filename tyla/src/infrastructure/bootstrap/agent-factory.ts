@@ -23,7 +23,6 @@ import { getRBridge } from '../r-adapter/r-bridge';
 import { PluginLoader } from '../filesystem/plugin-loader';
 import { KnowledgeRepository } from '../persistence/knowledge-repository';
 
-import { PolicyLoader } from '../config/policy-loader';
 import { DiffEngine } from '../../application/services/diff-engine';
 import { ToolRegistry } from '../../application/orchestration/tool-registry';
 import { EditStagingService } from '../../application/services/edit-staging-service';
@@ -136,10 +135,6 @@ export function buildAgentDeps(
         llm, registry, directory, emit, rBridge,
     });
 
-    const assignmentPolicyLoader = assignmentDir
-        ? new PolicyLoader(undefined, assignmentDir)
-        : undefined;
-
     const profile = getProfile(directory);
 
     const tutorChatGateway = profile
@@ -152,7 +147,7 @@ export function buildAgentDeps(
 
     const tutorUseCase = profile
         ? new ExecuteTutorUseCase({
-                registry, directory, emit, policyLoader: assignmentPolicyLoader,
+                registry, directory, emit,
                 tutorChatGateway: tutorChatGateway!,
                 guardCheckGateway: guardCheckGateway!,
                 onApproval: approvalBus.approve.bind(approvalBus),
