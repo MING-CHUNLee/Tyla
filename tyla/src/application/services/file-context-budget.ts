@@ -3,17 +3,16 @@
  *
  * A mutable, per-turn token pool for the tutor `file_context`.
  *
- * gap-list §C (2026-06-07): the base auto-read (`readFiles` / `readFallbackFiles`)
- * must honour the same caps as a B3 continuation load. Each base file is otherwise
- * only bounded by the 100k-char file_read cap (≈25k tokens), so even the base
- * context alone can be several times the backend's ~8K budget and trip
- * whole-or-drop on turn 0 — before any loop runs. One instance is created per turn
- * and threaded through every read so that base files (and, once the B3 driver
- * lands, continuation loads) draw down a single shared pool:
+ * One instance is created per turn and threaded through every read so that
+ * @-mentioned base files and B3 continuation loads draw down a single shared
+ * pool; once spent, further files are refused with a visible marker
+ * (`skipMarker`), never silently dropped. The pool is the last line of defence
+ * against the backend's whole-or-drop `context_overflow`.
  *
- *   per-file cap — no single file may dominate the pool.
- *   per-turn cap — base + loaded combined; once spent, further files are refused
- *                  with a visible marker (`skipMarker`), never silently dropped.
+ * The per-file cap was removed (plan 2026-06-11, decision 3): with @-gating
+ * only files the student explicitly named are loaded, so a single file may
+ * fill the whole pool — there is no "irrelevant auto-loaded file eats the
+ * budget" failure mode any more.
  */
 
 import { estimateTokens } from '../prompts';
@@ -27,10 +26,7 @@ const MIN_USEFUL_TOKENS = 100;
 export class FileContextBudget {
     private remaining: number;
 
-    constructor(
-        private readonly perFileCap: number,
-        perTurnCap: number,
-    ) {
+    constructor(perTurnCap: number) {
         this.remaining = perTurnCap;
     }
 
@@ -40,16 +36,16 @@ export class FileContextBudget {
     }
 
     /**
-     * Truncate `content` to the smaller of the per-file cap and what is left of
-     * the per-turn pool, draw the (re-measured) result down from the pool, and
-     * return the labelled block ready to concatenate into file_context.
+     * Truncate `content` to what is left of the per-turn pool, draw the
+     * (re-measured) result down from the pool, and return the labelled block
+     * ready to concatenate into file_context.
      *
      * The `slice(cap * 4)` step assumes ~4 chars/token (English / R source); the
      * draw-down re-measures the truncated body with `estimateTokens`, so the pool
      * accounting stays accurate even when the slice overshoots for CJK text.
      */
     take(label: string, content: string): string {
-        const cap = Math.min(this.perFileCap, this.remaining);
+        const cap = this.remaining;
         let body = content;
         if (estimateTokens(body) > cap) {
             // ~4 chars/token for English/R source; may undercount dense code — recalibrate in Phase 0.

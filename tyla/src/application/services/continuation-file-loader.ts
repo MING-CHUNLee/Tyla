@@ -21,6 +21,7 @@ import { IFileSystem } from '../../domain/types/file-system';
 import { PathConfinement } from '../../domain/policies/path-confinement';
 import { isProbablyText } from '../../domain/policies/text-content-policy';
 import { FileContextBudget } from './file-context-budget';
+import { addLineNumbers } from './line-numbering';
 
 export interface LoadResolution {
     /** Dedup key: success → canonicalPath; failure → `unresolved:<reason>:<req>` (§2.5). */
@@ -83,7 +84,10 @@ export class ContinuationFileLoader {
         if (!isProbablyText(buf)) {
             return { key: c.canonicalPath, ok: false, block: marker(label, 'unsupported type (binary)') };
         }
-        return { key: c.canonicalPath, ok: true, block: budget.take(label, buf.toString('utf8')) };
+        // Real-file line numbers (plan 2026-06-11 §2.1) — they anchor edit_file
+        // patches. Budget truncation keeps the head, so numbers stay correct.
+        // PDFs above stay un-numbered: extracted text has no anchorable file lines.
+        return { key: c.canonicalPath, ok: true, block: budget.take(label, addLineNumbers(buf.toString('utf8'))) };
     }
 }
 

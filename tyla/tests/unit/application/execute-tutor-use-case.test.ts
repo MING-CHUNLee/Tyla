@@ -169,6 +169,25 @@ describe('ExecuteTutorUseCase — Option B', () => {
         expect(fileSystem.write).not.toHaveBeenCalled();
     });
 
+    it('backend warnings are surfaced as status_update warnings (§2.7)', async () => {
+        const { deps, events } = makeOptionB({
+            tutor: {
+                status: 'done', logId: 7, content: 'hint', actions: [],
+                guardSkipped: false, usage: { inputTokens: 1, outputTokens: 1 },
+                warnings: ['file_context_dropped', 'history_truncated'],
+            },
+        });
+        const useCase = new ExecuteTutorUseCase(deps);
+
+        await useCase.execute('help', []);
+
+        const warnings = events
+            .filter(e => e.type === 'status_update' && typeof e.data.warning === 'string')
+            .map(e => e.data.warning as string);
+        expect(warnings.some(w => w.includes('檔案內容超過後端預算'))).toBe(true);
+        expect(warnings.some(w => w.includes('對話歷史過長'))).toBe(true);
+    });
+
     it('execute_script rejected emits script_rejected and never runs r_exec', async () => {
         const rExec = { execute: vi.fn() };
         const { deps, events, registryGet } = makeOptionB({
@@ -191,10 +210,10 @@ describe('ExecuteTutorUseCase — Option B', () => {
     });
 });
 
-// ── file_context token budget (gap-list §C) ────────────────────────────────────
-// The base auto-read (readFallbackFiles → readFiles) must honour the same per-file
-// and per-turn token caps as a continuation load, or the base context alone trips
-// the backend's whole-or-drop on turn 0. PER_FILE_TOKEN_CAP=1200, per-turn=2200.
+// ── file_context: @-gating + per-turn token budget (plan 2026-06-11 §2.4) ─────
+// Content reads are @-gated: only files the student names with `@<file>` are
+// loaded. The per-file cap is gone — a single named file may fill the whole
+// per-turn pool (default 6,000 tokens); only past the pool is it truncated.
 
 /** ~`tokens` tokens of ASCII (estimateTokens ≈ chars/4 for English). */
 function bigContent(tokens: number): string {
@@ -229,34 +248,99 @@ function capturedFileContext(deps: ExecuteTutorDeps): string {
     return send.mock.calls[0][3] as string;
 }
 
-describe('ExecuteTutorUseCase — file_context budget (§C)', () => {
-    // Instruction with no filename match and no 'r' (avoids the single-letter ext
-    // match) so buildFileContext falls through to readFallbackFiles (top-5 auto-load).
-    const NO_MATCH = 'explain please';
+describe('ExecuteTutorUseCase — @-gated file_context (plan 2026-06-11 §2.4)', () => {
+    it('omits the File Contents block when the instruction has no @ mention', async () => {
+        const files = [{ name: 'hw2.R', path: '/project/hw2.R' }];
+        const setup = makeReadRegistry(files, () => 'x <- 1\n');
+        const { deps } = makeOptionB(setup);
+        const useCase = new ExecuteTutorUseCase(deps);
 
-    it('caps a single oversized base file to the per-file budget', async () => {
+        await useCase.execute('explain my homework please', []);
+
+        const fileContext = capturedFileContext(deps);
+        expect(fileContext).toContain('## Project Context');      // name-only list stays
+        expect(fileContext).not.toContain('## File Contents');
+        expect(setup.fileSystem.readBuffer).not.toHaveBeenCalled();
+    });
+
+    it('loads an @-mentioned scanned file with line-number prefixes', async () => {
+        const files = [{ name: 'hw2.R', path: '/project/hw2.R' }];
+        const { deps } = makeOptionB(makeReadRegistry(files, () => 'x <- 1\ny <- 2\n'));
+        const useCase = new ExecuteTutorUseCase(deps);
+
+        await useCase.execute('please look at @hw2.R', []);
+
+        const fileContext = capturedFileContext(deps);
+        expect(fileContext).toContain('## File Contents');
+        expect(fileContext).toContain('### hw2.R');
+        expect(fileContext).toContain('1| x <- 1\n2| y <- 2');
+    });
+
+    it('matches @ tokens against scanned basenames case-insensitively', async () => {
+        const files = [{ name: 'hw2.R', path: '/project/hw2.R' }];
+        const { deps } = makeOptionB(makeReadRegistry(files, () => 'x <- 1\n'));
+        const useCase = new ExecuteTutorUseCase(deps);
+
+        await useCase.execute('check @HW2.r for me', []);
+
+        expect(capturedFileContext(deps)).toContain('### hw2.R');
+    });
+
+    it('@ pointing at a nonexistent file yields an unavailable marker + warning', async () => {
+        const files = [{ name: 'hw2.R', path: '/project/hw2.R' }];
+        const setup = makeReadRegistry(files, () => 'x <- 1\n');
+        // realpath throws for the unscanned token → confinement 'not-found'
+        (setup.fileSystem.realpath as ReturnType<typeof vi.fn>).mockImplementation((p: string) => {
+            if (p.includes('missing')) throw new Error('ENOENT');
+            return path.resolve(p);
+        });
+        const { deps, events } = makeOptionB(setup);
+        const useCase = new ExecuteTutorUseCase(deps);
+
+        await useCase.execute('check @missing.R', []);
+
+        const fileContext = capturedFileContext(deps);
+        expect(fileContext).toContain('unavailable (not-found)');
+        expect(events.some(e => e.type === 'status_update'
+            && typeof e.data.warning === 'string'
+            && (e.data.warning as string).includes('missing.R'))).toBe(true);
+    });
+});
+
+describe('ExecuteTutorUseCase — file_context budget (per-turn pool only)', () => {
+    it('lets a single @-mentioned file fill the whole per-turn pool untruncated', async () => {
         const files = [{ name: 'f0.R', path: '/project/f0.R' }];
+        // 5,000 tokens < 6,000-token pool — no per-file cap any more.
         const { deps } = makeOptionB(makeReadRegistry(files, () => bigContent(5_000)));
         const useCase = new ExecuteTutorUseCase(deps);
 
-        await useCase.execute(NO_MATCH, []);
+        await useCase.execute('explain @f0.R', []);
+
+        expect(capturedFileContext(deps)).not.toContain('[…truncated for token budget]');
+    });
+
+    it('truncates a single file only past the per-turn pool', async () => {
+        const files = [{ name: 'f0.R', path: '/project/f0.R' }];
+        const { deps } = makeOptionB(makeReadRegistry(files, () => bigContent(7_000)));
+        const useCase = new ExecuteTutorUseCase(deps);
+
+        await useCase.execute('explain @f0.R', []);
 
         const fileContext = capturedFileContext(deps);
         expect(fileContext).toContain('[…truncated for token budget]');
-        // one file, capped per-file (~1200) — nowhere near the raw 5,000 tokens.
-        expect(estimateTokens(fileContext)).toBeLessThan(1_600);
+        expect(estimateTokens(fileContext)).toBeLessThan(6_500);
     });
 
-    it('refuses base files past the per-turn budget with a marker (not a silent drop)', async () => {
-        const files = Array.from({ length: 5 }, (_, i) => ({ name: `f${i}.R`, path: `/project/f${i}.R` }));
-        const { deps, events } = makeOptionB(makeReadRegistry(files, () => bigContent(1_000)));
+    it('refuses @-files past the per-turn budget with a marker (not a silent drop)', async () => {
+        const files = Array.from({ length: 4 }, (_, i) => ({ name: `f${i}.R`, path: `/project/f${i}.R` }));
+        const { deps, events } = makeOptionB(makeReadRegistry(files, () => bigContent(2_500)));
         const useCase = new ExecuteTutorUseCase(deps);
 
-        await useCase.execute(NO_MATCH, []);
+        await useCase.execute('explain @f0.R @f1.R @f2.R @f3.R', []);
 
         const fileContext = capturedFileContext(deps);
-        // per-turn pool (~2200) keeps the whole base context bounded …
-        expect(estimateTokens(fileContext)).toBeLessThan(2_600);
+        // per-turn pool (~6,000) keeps the whole base context bounded …
+        expect(estimateTokens(fileContext)).toBeLessThan(6_500);
         // … and the overflow files are refused with a visible marker, not dropped.
         expect(fileContext).toContain('[skipped: file-context token budget exhausted]');
         expect(events.some(e => e.type === 'status_update'
@@ -264,18 +348,119 @@ describe('ExecuteTutorUseCase — file_context budget (§C)', () => {
             && (e.data.warning as string).includes('token budget reached'))).toBe(true);
     });
 
-    it('leaves small base files untouched (no truncation, no skip)', async () => {
+    it('leaves small @-mentioned files untouched (no truncation, no skip)', async () => {
         const files = Array.from({ length: 3 }, (_, i) => ({ name: `f${i}.R`, path: `/project/f${i}.R` }));
-        const { deps } = makeOptionB(makeReadRegistry(files, p => `content of ${p}`));
+        const { deps } = makeOptionB(makeReadRegistry(files, p => `content of ${path.basename(p)}`));
         const useCase = new ExecuteTutorUseCase(deps);
 
-        await useCase.execute(NO_MATCH, []);
+        await useCase.execute('explain @f0.R @f1.R @f2.R', []);
 
         const fileContext = capturedFileContext(deps);
         expect(fileContext).not.toContain('[…truncated for token budget]');
         expect(fileContext).not.toContain('[skipped: file-context token budget exhausted]');
-        // path.resolve normalises the fake POSIX root to the platform canonical form
-        expect(fileContext).toContain(`content of ${path.resolve('/project', 'f0.R')}`);
-        expect(fileContext).toContain(`content of ${path.resolve('/project', 'f2.R')}`);
+        expect(fileContext).toContain('content of f0.R');
+        expect(fileContext).toContain('content of f2.R');
+    });
+});
+
+// ── edit_file numbered patches (plan 2026-06-11 §2.3) ─────────────────────────
+// Layer 1: line-number anchors locate the exact lines (duplicates resolved);
+// Layer 2: stale/missing anchors fall back to first-occurrence text search.
+
+const PATCH_ORIGINAL = [
+    'x <- 1',
+    'quantile(d, probs = 0.5)',
+    'y <- 2',
+    'quantile(d, probs = 0.5)',
+    'z <- 3',
+].join('\n');
+
+function makePatchSetup(patches: Array<{ search: string; replace: string }>) {
+    const fileSystem = makeFs({ read: vi.fn().mockReturnValue(PATCH_ORIGINAL) });
+    const { deps, events } = makeOptionB({
+        tutor: {
+            status: 'done', logId: 7, content: 'Patching',
+            actions: [{ type: 'edit_file', path: 'hw11.R', patches }],
+            guardSkipped: false, usage: { inputTokens: 1, outputTokens: 1 },
+        },
+        fileSystem,
+    });
+    return { deps, events };
+}
+
+function proposedContent(events: Array<{ type: string; data: Record<string, unknown> }>): string {
+    return events.find(e => e.type === 'diff_proposed')?.data.proposed as string;
+}
+
+describe('ExecuteTutorUseCase — edit_file numbered patches (§2.3)', () => {
+    it('anchored patch edits the numbered occurrence, not the first duplicate', async () => {
+        const { deps, events } = makePatchSetup([
+            { search: '4| quantile(d, probs = 0.5)', replace: 'quantile(d, probs = 0.95)' },
+        ]);
+        await new ExecuteTutorUseCase(deps).execute('fix line 4', []);
+
+        expect(proposedContent(events)).toBe([
+            'x <- 1',
+            'quantile(d, probs = 0.5)',          // line 2 (first occurrence) untouched
+            'y <- 2',
+            'quantile(d, probs = 0.95)',
+            'z <- 3',
+        ].join('\n'));
+    });
+
+    it('stale anchor falls back to text search with a warning', async () => {
+        // line 5 is 'z <- 3', not 'y <- 2' → anchor mismatch → text fallback hits line 3.
+        const { deps, events } = makePatchSetup([
+            { search: '5| y <- 2', replace: 'y <- 99' },
+        ]);
+        await new ExecuteTutorUseCase(deps).execute('fix it', []);
+
+        expect(proposedContent(events)).toContain('y <- 99');
+        expect(events.some(e => e.type === 'status_update'
+            && typeof e.data.warning === 'string'
+            && (e.data.warning as string).includes('line anchor 5 did not match'))).toBe(true);
+    });
+
+    it('applies multiple anchored patches bottom-up so earlier anchors survive', async () => {
+        const { deps, events } = makePatchSetup([
+            { search: '1| x <- 1', replace: 'x0 <- 0\nx <- 1' },   // inserts a line above the rest
+            { search: '5| z <- 3', replace: 'z <- 30' },
+        ]);
+        await new ExecuteTutorUseCase(deps).execute('two edits', []);
+
+        expect(proposedContent(events)).toBe([
+            'x0 <- 0',
+            'x <- 1',
+            'quantile(d, probs = 0.5)',
+            'y <- 2',
+            'quantile(d, probs = 0.5)',
+            'z <- 30',
+        ].join('\n'));
+    });
+
+    it('strips stray line-number prefixes from replace defensively', async () => {
+        const { deps, events } = makePatchSetup([
+            { search: '3| y <- 2', replace: '3| y <- 42' },
+        ]);
+        await new ExecuteTutorUseCase(deps).execute('fix it', []);
+
+        const proposed = proposedContent(events);
+        expect(proposed).toContain('y <- 42');
+        expect(proposed).not.toContain('3|');
+    });
+
+    it('un-numbered patch keeps the first-occurrence text-search behaviour', async () => {
+        const { deps, events } = makePatchSetup([
+            { search: 'quantile(d, probs = 0.5)', replace: 'quantile(d, probs = 0.25)' },
+        ]);
+        await new ExecuteTutorUseCase(deps).execute('fix it', []);
+
+        expect(proposedContent(events)).toBe([
+            'x <- 1',
+            'quantile(d, probs = 0.25)',          // first occurrence replaced …
+            'y <- 2',
+            'quantile(d, probs = 0.5)',           // … second untouched
+            'z <- 3',
+        ].join('\n'));
     });
 });

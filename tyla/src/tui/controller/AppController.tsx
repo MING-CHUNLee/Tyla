@@ -16,6 +16,10 @@ function makeStatusMessage(content: string): TUIMessage {
     return { id: nextId(), type: 'status', content, timestamp: new Date() };
 }
 
+// Same `@<file>` convention as the use case's FILE_MENTION_RE (plan 2026-06-11
+// §2.6) — presentation-layer input hint only, no event, never enters the pipeline.
+const FILE_MENTION_RE = /@([\w\-./\\]+)/;
+
 const AppController: React.FC<AppControllerProps> = ({ config }) => {
     const { exit } = useApp();
 
@@ -40,6 +44,7 @@ const AppController: React.FC<AppControllerProps> = ({ config }) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const agentServiceRef = useRef<any>(null);
     const approvalResolverRef = useRef<((approved: boolean) => void) | null>(null);
+    const atHintShownRef = useRef(false);   // §2.6: show the @-hint once per session
 
     const addMessage = useCallback((msg: TUIMessage) => {
         setMessages(prev => [...prev, msg]);
@@ -160,6 +165,12 @@ const AppController: React.FC<AppControllerProps> = ({ config }) => {
             return;
         }
 
+        // §2.6: tutor file reads are @-gated — nudge (once) when no @ token is present.
+        if (config?.tutorMode && !FILE_MENTION_RE.test(userInput) && !atHintShownRef.current) {
+            atHintShownRef.current = true;
+            addStatusMessage('提示：可用 @檔名（如 @hw2.R）將檔案內容帶給 tutor');
+        }
+
         // Run agent
         setAppState('processing');
         setStreamingContent('');
@@ -179,7 +190,7 @@ const AppController: React.FC<AppControllerProps> = ({ config }) => {
         setIsStreaming(false);
         setStreamingContent('');
         setAppState('idle');
-    }, [appState, addMessage, addStatusMessage, exit]);
+    }, [appState, addMessage, addStatusMessage, exit, config?.tutorMode]);
 
     return (
         <AppView

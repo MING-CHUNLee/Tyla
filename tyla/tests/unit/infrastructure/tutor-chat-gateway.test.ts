@@ -82,6 +82,53 @@ describe('TutorChatGateway.send', () => {
         expect('actions' in result).toBe(false);
     });
 
+    it('parses warnings into the done result (plan 2026-06-11 §2.7)', async () => {
+        mockPost.mockResolvedValue({
+            data: {
+                log_id: 1, status: 'done', content: 'ok', actions: [],
+                usage: { input_tokens: 1, output_tokens: 2 },
+                warnings: ['file_context_dropped', 'history_truncated'],
+            },
+        });
+        const gw = new TutorChatGateway();
+
+        const result = await gw.send('hello', [], 1);
+
+        expect(result.status).toBe('done');
+        if (result.status === 'done' || result.status === 'unavailable') {
+            expect(result.warnings).toEqual(['file_context_dropped', 'history_truncated']);
+        }
+    });
+
+    it('defaults warnings to [] when the field is missing (older backend)', async () => {
+        mockPost.mockResolvedValue({
+            data: { log_id: 1, status: 'done', content: 'ok', actions: [], usage: null },
+        });
+        const gw = new TutorChatGateway();
+
+        const result = await gw.send('hello', [], 1);
+
+        if (result.status === 'done' || result.status === 'unavailable') {
+            expect(result.warnings).toEqual([]);
+        }
+    });
+
+    it('drops non-string entries from warnings', async () => {
+        mockPost.mockResolvedValue({
+            data: {
+                log_id: 1, status: 'done', content: 'ok', actions: [], usage: null,
+                warnings: ['file_context_dropped', 42, null],
+            },
+        });
+        const gw = new TutorChatGateway();
+
+        const result = await gw.send('hello', [], 1);
+
+        if (result.status === 'done' || result.status === 'unavailable') {
+            expect(result.warnings).toEqual(['file_context_dropped']);
+        }
+    });
+
     it('error carries no actions and surfaces the content', async () => {
         mockPost.mockResolvedValue({
             data: { log_id: 3, status: 'error', content: 'server boom', usage: null },

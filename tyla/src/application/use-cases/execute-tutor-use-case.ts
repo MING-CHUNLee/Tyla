@@ -23,22 +23,30 @@ import { TutorAction, EditPatch } from '../../shared/types/tutor-actions';
 import { ContinuationFileLoader } from '../services/continuation-file-loader';
 import { PathConfinement } from '../../domain/policies/path-confinement';
 import { extractPdfText } from '../../infrastructure/pdf/pdf-text-extractor';
+import { AnchoredLine, parseNumberedLines, stripLineNumberPrefixes } from '../services/line-numbering';
 
-const FALLBACK_FILE_LIMIT = 5;                     // read at most N when nothing is named
+// ── file_context token budget (plan 2026-06-11 §2.4) ─────────────────────────
+// One shared per-turn pool for @-mentioned files AND B3 continuation loads —
+// the last line of defence against the backend's whole-or-drop context_overflow
+// (ContinuationFileLoader has no other size guard, and B3 load_file is
+// LLM-initiated, outside the student's control). Widened from 2,200 with
+// @-gating so a student-named file is almost never truncated; overridable via
+// env until Phase 0 measurement settles the number.
+const PER_TURN_FILE_CONTEXT_TOKEN_CAP =
+    Number(process.env.TYLA_FILE_CONTEXT_TOKEN_CAP) || 6_000;
 
-// ── file_context token budget (gap-list §C) ───────────────────────────────────
-// The base auto-read must obey the same caps as a B3 continuation load, or the
-// base context alone overruns the backend's ~8K budget on turn 0. Calibrated for
-// GitHub Models: ~5K static base leaves ~3K, so file_context ≲ ~2.2K keeps room
-// for history/summary. Tune in §8 Phase 0 once measured.
-const PER_FILE_TOKEN_CAP = 1_200;                  // no single file dominates the pool
-const PER_TURN_FILE_CONTEXT_TOKEN_CAP = 2_200;     // base + loaded combined
-// Code/source groups only. Data (rData / dataFiles / rProject) AND documents (PDFs etc.)
-// are never auto-read — documents are large and the assignment policy may already carry
-// their content, so they load name-only (only when the student references them).
-// Order = preference. THIS is the one-line seam for new languages: add 'pythonScripts'
-// once file_scan surfaces it.
-const FALLBACK_GROUPS = ['rScripts', 'rMarkdown'] as const;
+// @-mention parser (§2.4) — shared convention with the TUI hint and
+// line-numbering. Path character set; `@"..."` for names with spaces is a
+// later extension.
+const FILE_MENTION_RE = /@([\w\-./\\]+)/g;
+
+// Backend trim notices → student-facing messages (§2.7). The warning is a
+// safety net for the backend's whole-or-drop trimming; the per-turn budget
+// above is the primary defence (graceful head-truncation).
+const BACKEND_WARNING_MESSAGES: Record<string, string> = {
+    file_context_dropped: '檔案內容超過後端預算，本回合 tutor 沒有看到你的檔案',
+    history_truncated:    '對話歷史過長，較早的回合已被省略',
+};
 
 const MAX_CONTINUATIONS = 3;   // hard termination invariant (b3 §4.4, §8); lower to 2 after Phase 0
 
@@ -69,12 +77,50 @@ export interface TutorResult {
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
-/** First-occurrence search-replace; skip-and-warn on a missing search string. */
-function applyPatches(original: string, patches: EditPatch[], warn: (m: string) => void): string {
-    let out = original;
-    for (const { search, replace } of patches) {
-        if (!out.includes(search)) { warn(`patch search text not found, skipped`); continue; }
-        out = out.replace(search, replace); // first occurrence only
+/**
+ * Two-layer patch application (plan 2026-06-11 §2.3).
+ *
+ * Layer 1 — anchored: `search` lines carry `N| ` prefixes pointing at real file
+ * lines. Verify the file slice matches the de-prefixed search (trimEnd-loose to
+ * tolerate trailing whitespace), then splice in the de-prefixed replace. Anchors
+ * all reference ORIGINAL line numbers, so anchored patches apply bottom-up —
+ * earlier anchors are unaffected when a later patch changes the line count.
+ * The verification doubles as stale-context protection: if the student edited
+ * the file since the numbers were issued, the mismatch demotes the patch to…
+ *
+ * Layer 2 — text fallback: strip any prefixes and replace the first occurrence
+ * (the pre-line-number behaviour). Both layers failing → skip-and-warn.
+ */
+function applyNumberedPatches(original: string, patches: EditPatch[], warn: (m: string) => void): string {
+    const anchored: Array<{ start: number; searchLines: AnchoredLine[]; replace: string }> = [];
+    const textPatches: EditPatch[] = [];
+    for (const patch of patches) {
+        const parsed = parseNumberedLines(patch.search);
+        if (parsed) anchored.push({ start: parsed[0].lineNo, searchLines: parsed, replace: patch.replace });
+        else textPatches.push(patch);
+    }
+
+    const lines = original.split('\n');
+    anchored.sort((a, b) => b.start - a.start);                     // bottom-up
+    for (const { start, searchLines, replace } of anchored) {
+        const idx = start - 1;
+        const slice = lines.slice(idx, idx + searchLines.length);
+        const matches = idx >= 0 && idx + searchLines.length <= lines.length
+            && searchLines.every((searchLine, i) => slice[i].trimEnd() === searchLine.text.trimEnd());
+        if (matches) {
+            const replaceLines = replace === '' ? [] : stripLineNumberPrefixes(replace).split('\n');
+            lines.splice(idx, searchLines.length, ...replaceLines);
+        } else {
+            warn(`line anchor ${start} did not match current file content — falling back to text search`);
+            textPatches.push({ search: searchLines.map(l => l.text).join('\n'), replace });
+        }
+    }
+
+    let out = lines.join('\n');
+    for (const { search, replace } of textPatches) {
+        const plainSearch = stripLineNumberPrefixes(search);
+        if (!out.includes(plainSearch)) { warn(`patch search text not found, skipped`); continue; }
+        out = out.replace(plainSearch, stripLineNumberPrefixes(replace)); // first occurrence only
     }
     return out;
 }
@@ -116,7 +162,7 @@ export class ExecuteTutorUseCase {
         // ── 1. file_context (reuses scan + read helpers) ───────────────────────
         // Single budget instance for the whole turn: base reads and B3 continuation
         // loads draw from one shared pool (gap-list §C, b3 §2.3).
-        const budget = new FileContextBudget(PER_FILE_TOKEN_CAP, PER_TURN_FILE_CONTEXT_TOKEN_CAP);
+        const budget = new FileContextBudget(PER_TURN_FILE_CONTEXT_TOKEN_CAP);
         const baseContext = await this.buildFileContext(instruction, budget);
 
         // ── 2. Guard pre-call ──────────────────────────────────────────────────
@@ -146,6 +192,7 @@ export class ExecuteTutorUseCase {
         // ── 3. B3 continuation loop (G1+G4+G5+G6+G9) ─────────────────────────
         const resolved = new Map<string, 'loaded' | 'unavailable'>();
         const loadedBlocks: string[] = [];
+        const emittedWarnings = new Set<string>();
         let usage = toTurnUsage(guard.usage);
 
         for (let i = 0; ; i++) {
@@ -175,6 +222,12 @@ export class ExecuteTutorUseCase {
             }
             if (result.guardSkipped) {
                 this.deps.emit('status_update', { warning: 'tutor: guard credential accepted under fail-open' });
+            }
+            // §2.7: backend trim notices → visible warnings (deduped across continuations).
+            for (const code of result.warnings ?? []) {
+                if (emittedWarnings.has(code)) continue;
+                emittedWarnings.add(code);
+                this.deps.emit('status_update', { warning: BACKEND_WARNING_MESSAGES[code] ?? `backend warning: ${code}` });
             }
 
             // Collect and resolve new load_file actions (G4+G7)
@@ -243,7 +296,7 @@ export class ExecuteTutorUseCase {
             original = ''; // new file
         }
 
-        const proposed = applyPatches(original, action.patches,
+        const proposed = applyNumberedPatches(original, action.patches,
             (msg) => this.deps.emit('status_update', { warning: `edit_file ${action.path}: ${msg}` }));
 
         // stageOnly() does NOT push to the drain queue (the tutor applies per-action, never
@@ -293,13 +346,11 @@ export class ExecuteTutorUseCase {
 
     private async buildFileContext(instruction: string, budget: FileContextBudget): Promise<string> {
         this.deps.emit('phase_start', { phase: 'scan', description: 'Building file context' });
-        const { projectContext, scannedFiles } = await this.buildProjectContext();   // (i)  file_scan
-
-        // (ii) explicit match first; (iv) fall back to the top-N source files if nothing named.
-        let fileContents = await this.readRelevantFiles(instruction, scannedFiles, budget);
-        if (!fileContents) {
-            fileContents = await this.readFallbackFiles(scannedFiles, budget);
-        }
+        // file_scan stays unconditional but name-only (decision 1): the cheap
+        // Project Context list is what lets the B3 load_file loop know which
+        // workspace files it can request. Content reads are @-gated below.
+        const { projectContext, scannedFiles } = await this.buildProjectContext();
+        const fileContents = await this.readMentionedFiles(instruction, scannedFiles, budget);
         this.deps.emit('phase_end', { phase: 'scan', success: true });
 
         const parts: string[] = [];
@@ -309,20 +360,35 @@ export class ExecuteTutorUseCase {
         return parts.join('\n\n');
     }
 
-    private async readFallbackFiles(scannedFiles: ScannedFile[], budget: FileContextBudget): Promise<string> {
-        const ranked = scannedFiles
-            .filter(f => (FALLBACK_GROUPS as readonly string[]).includes(f.group))
-            .sort((a, b) => FALLBACK_GROUPS.indexOf(a.group as never) - FALLBACK_GROUPS.indexOf(b.group as never));
+    /**
+     * @-gated content reads (plan 2026-06-11 §2.4): only files the student
+     * explicitly names with `@<file>` are loaded. Each token is matched against
+     * the file_scan results by basename (case-insensitive); an unmatched token
+     * is handed to the loader as a relative path (confinement blocks escapes),
+     * so a miss yields an unavailable marker + warning — visible to both the
+     * LLM and the student, never a silent drop.
+     */
+    private async readMentionedFiles(
+        instruction: string,
+        scannedFiles: ScannedFile[],
+        budget: FileContextBudget,
+    ): Promise<string> {
+        const tokens = [...instruction.matchAll(FILE_MENTION_RE)].map(m => m[1]);
+        if (tokens.length === 0) return '';
 
-        const targets = ranked.slice(0, FALLBACK_FILE_LIMIT);
-        if (targets.length === 0) return '';
-        this.deps.emit('status_update', {
-            info: `No file named — auto-loading ${targets.length} source file(s): ${targets.map(t => t.name).join(', ')}`,
-        });
+        const seen = new Set<string>();
+        const targets: Array<{ name: string; path: string }> = [];
+        for (const token of tokens) {
+            const key = token.toLowerCase();
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const basename = path.basename(key);
+            const match = scannedFiles.find(file => file.name.toLowerCase() === basename);
+            targets.push(match ?? { name: token, path: token });
+        }
 
-        // Sequential (readFiles loops in order) so the shared per-turn budget is
-        // drawn down deterministically — overflow refuses the *later* files with a
-        // marker rather than racing a Promise.all. (gap-list §C)
+        // Sequential so the shared per-turn budget is drawn down deterministically —
+        // overflow refuses the *later* files with a marker rather than racing a Promise.all.
         return this.readFiles(targets, budget);
     }
 
@@ -360,28 +426,11 @@ export class ExecuteTutorUseCase {
         return { projectContext, scannedFiles };
     }
 
-    private async readRelevantFiles(
-        instruction: string,
-        scannedFiles: ScannedFile[],
-        budget: FileContextBudget,
-    ): Promise<string> {
-        const instructionLower = instruction.toLowerCase();
-        const readTargets = scannedFiles.filter(file => {
-            const nameLower = file.name.toLowerCase();
-            if (instructionLower.includes(nameLower)) return true;       // "...my hw11.R..." → match
-            const ext = path.extname(nameLower).slice(1);
-            return ext.length > 0 && instructionLower.includes(ext);     // "...the .R file..." → match
-        });
-
-        return this.readFiles(readTargets, budget);
-    }
-
     /**
      * Read a fixed set of files through ContinuationFileLoader.resolve(), concatenating
-     * their contents under the shared per-turn token budget (gap-list §C). Each file is
-     * capped per-file; once the per-turn pool is spent the remaining files are refused
-     * with a visible marker rather than silently dropped. PDF, binary, and symlink-escape
-     * checks are all handled inside the loader.
+     * their contents under the shared per-turn token budget; once the pool is spent the
+     * remaining files are refused with a visible marker rather than silently dropped.
+     * PDF, binary, and symlink-escape checks are all handled inside the loader.
      */
     private async readFiles(targets: Array<{ name: string; path: string }>, budget: FileContextBudget): Promise<string> {
         let out = '';

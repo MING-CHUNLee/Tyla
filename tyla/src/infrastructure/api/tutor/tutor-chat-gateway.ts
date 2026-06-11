@@ -14,12 +14,14 @@ interface TutorChatResponse {
     content: string;
     actions?: unknown[];          // validated → TutorAction[] in send()
     usage: { input_tokens: number; output_tokens: number } | null;
+    /** Backend trim notices, e.g. "file_context_dropped" (plan 2026-06-11 §2.7). Older backends omit it. */
+    warnings?: unknown[];
 }
 
 // ── Domain result ─────────────────────────────────────────────────────────────
 
 export type TutorChatResult =
-    | { status: 'done' | 'unavailable'; logId: number; content: string; actions: TutorAction[]; usage: Usage; guardSkipped: boolean }
+    | { status: 'done' | 'unavailable'; logId: number; content: string; actions: TutorAction[]; usage: Usage; guardSkipped: boolean; warnings: string[] }
     | { status: 'forbidden';            logId: number; content: string; usage: Usage }
     | { status: 'error';                logId: number; content: string; usage: Usage };
 
@@ -97,12 +99,18 @@ export class TutorChatGateway {
             ? data.actions.filter(isTutorAction)
             : [];
 
+        // §2.7: surface backend trim notices; missing field (older backend) → [].
+        const warnings: string[] = Array.isArray(data.warnings)
+            ? data.warnings.filter((w): w is string => typeof w === 'string')
+            : [];
+
         return {
             status:      data.status,
             logId:       data.log_id,
             content:     data.content,
             actions,
             guardSkipped,
+            warnings,
             usage: parseUsage(data.usage),
         };
     }

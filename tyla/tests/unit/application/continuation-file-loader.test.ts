@@ -54,8 +54,8 @@ function makeFs(buf: Buffer = Buffer.from('hello world\n')): IFileSystem {
     } as unknown as IFileSystem;
 }
 
-function freshBudget(perFileCap = 1200, perTurnCap = 2200): FileContextBudget {
-    return new FileContextBudget(perFileCap, perTurnCap);
+function freshBudget(perTurnCap = 2200): FileContextBudget {
+    return new FileContextBudget(perTurnCap);
 }
 
 function noPdf(): (buf: Buffer) => Promise<string> {
@@ -97,7 +97,7 @@ describe('ContinuationFileLoader.resolve', () => {
     // ── Budget exhaustion ─────────────────────────────────────────────────────
 
     it('returns skipMarker when budget is already exhausted', async () => {
-        const exhaustedBudget = new FileContextBudget(1, 0); // 0 remaining → isExhausted() = true
+        const exhaustedBudget = new FileContextBudget(0); // 0 remaining → isExhausted() = true
         const loader = new ContinuationFileLoader(makeFs(), okConfinement(CANONICAL_TXT), noPdf());
         const r = await loader.resolve(ROOT, 'data/hw.R', exhaustedBudget);
 
@@ -108,7 +108,7 @@ describe('ContinuationFileLoader.resolve', () => {
 
     // ── Text files ────────────────────────────────────────────────────────────
 
-    it('loads a plain text file and returns ok: true with labelled block', async () => {
+    it('loads a plain text file with line-number prefixes and returns ok: true', async () => {
         const content = 'x <- 1\ny <- 2\n';
         const loader = new ContinuationFileLoader(
             makeFs(Buffer.from(content)),
@@ -120,7 +120,7 @@ describe('ContinuationFileLoader.resolve', () => {
         expect(r.ok).toBe(true);
         expect(r.key).toBe(CANONICAL_TXT);
         expect(r.block).toContain('### hw.R');
-        expect(r.block).toContain(content.trim());
+        expect(r.block).toContain('1| x <- 1\n2| y <- 2');
     });
 
     it('returns binary marker for a buffer containing a NUL byte', async () => {
@@ -212,7 +212,7 @@ describe('ContinuationFileLoader.resolve', () => {
 
     it('still returns ok: true when content is truncated by the token budget', async () => {
         // Tiny budget: perTurnCap=200, enough to seat something but less than a big file
-        const tightBudget = new FileContextBudget(50, 200);
+        const tightBudget = new FileContextBudget(200);
         const bigContent = 'A'.repeat(10_000); // well above 200-token budget
         const loader = new ContinuationFileLoader(
             makeFs(Buffer.from(bigContent)),
