@@ -51,6 +51,31 @@ describe('TutorChatGateway.send', () => {
         expect('file_context' in body).toBe(false);
     });
 
+    it('includes workspace_overview in the request body when provided (plan 2026-06-12 §4)', async () => {
+        mockPost.mockResolvedValue({
+            data: { log_id: 1, status: 'done', content: 'ok', actions: [], usage: null },
+        });
+        const gw = new TutorChatGateway();
+
+        await gw.send('hello', [], 7, undefined, 'WORKSPACE-OVERVIEW');
+
+        const body = mockPost.mock.calls[0][1];
+        expect(body.workspace_overview).toBe('WORKSPACE-OVERVIEW');
+        expect('file_context' in body).toBe(false);
+    });
+
+    it('omits workspace_overview when none is provided', async () => {
+        mockPost.mockResolvedValue({
+            data: { log_id: 1, status: 'done', content: 'ok', actions: [], usage: null },
+        });
+        const gw = new TutorChatGateway();
+
+        await gw.send('hello', [], 5, 'FILE-CONTEXT');
+
+        const body = mockPost.mock.calls[0][1];
+        expect('workspace_overview' in body).toBe(false);
+    });
+
     it('filters actions through isTutorAction (one valid + one malformed → length 1)', async () => {
         mockPost.mockResolvedValue({
             data: {

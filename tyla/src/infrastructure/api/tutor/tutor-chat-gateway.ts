@@ -44,9 +44,15 @@ export class TutorChatGateway {
         history: SessionMessage[],
         guardLogId: number,
         fileContext?: string,
+        workspaceOverview?: string,
     ): Promise<TutorChatResult> {
         const { profile, headers } = buildTylaApiRequest('tutor-api', this.directory);
 
+        // Two explicit channels (plan 2026-06-12): `workspace_overview` is the cheap
+        // file-listing manifest (no contents/line numbers); `file_context` is the
+        // line-numbered contents of files actually loaded (@-mention or load_file).
+        // The backend gate uses `workspace_overview`'s presence as the contract-version
+        // marker, so we send it whenever a scan produced a summary.
         const body = {
             course_id:  profile.courseId,
             project_id: profile.projectId,
@@ -55,6 +61,7 @@ export class TutorChatGateway {
             prompt,
             history,
             ...(fileContext ? { file_context: fileContext } : {}),
+            ...(workspaceOverview ? { workspace_overview: workspaceOverview } : {}),
         };
         debugLog('tutor', 'REQUEST', body);
 

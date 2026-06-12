@@ -39,7 +39,7 @@ const Footer: React.FC<FooterProps> = ({
                         </>
                     ) : appState === 'reviewing' ? (
                         <Text color="yellow" bold>
-                            Review mode — press [Y] to accept, [N] to reject
+                            Review mode
                         </Text>
                     ) : (
                         <>
@@ -60,10 +60,7 @@ const Footer: React.FC<FooterProps> = ({
                             <Text color="yellow">/help</Text> for commands
                         </>
                     ) : appState === 'reviewing' ? (
-                        <>
-                            <Text color="yellow">[Y]</Text> Accept ·{' '}
-                            <Text color="yellow">[N]</Text> Reject
-                        </>
+                        <>Respond in the review box above</>
                     ) : (
                         <>Agent is working...</>
                     )}

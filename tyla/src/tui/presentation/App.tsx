@@ -64,8 +64,9 @@ const AppView: React.FC<AppViewProps> = ({
 
                 {appState === 'reviewing' && pendingApproval?.kind === 'script' && (
                     <DiffReview
+                        variant="script"
                         edit={{
-                            path: '(r script)',
+                            path: 'R script',
                             diff: pendingApproval.script.code,
                             original: '',
                             proposed: pendingApproval.script.code,

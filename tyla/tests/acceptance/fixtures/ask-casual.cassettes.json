@@ -9,15 +9,15 @@
       },
       "model": "gpt-4o-2024-11-20",
       "provider": "openai",
-      "responseTimeMs": 1940
+      "responseTimeMs": 1962
     }
   },
   {
     "response": {
-      "content": "Hello! How can I assist you today?",
+      "content": "Hello! How can I assist you today? 😊",
       "model": "gpt-4o",
       "provider": "openai",
-      "responseTimeMs": 1340
+      "responseTimeMs": 1341
     },
     "stream": true
   }

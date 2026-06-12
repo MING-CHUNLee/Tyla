@@ -12,6 +12,7 @@ import { PendingEdit } from '../types.js';
 interface DiffReviewProps {
     edit: PendingEdit;
     onDecision: (approved: boolean) => void;
+    variant?: 'edit' | 'script';   // controls title verb and confirm line; defaults to 'edit'
 }
 
 const LINE_COLOR: Record<string, string> = {
@@ -20,7 +21,9 @@ const LINE_COLOR: Record<string, string> = {
     context: 'gray',
 };
 
-const DiffReview: React.FC<DiffReviewProps> = ({ edit, onDecision }) => {
+const DiffReview: React.FC<DiffReviewProps> = ({ edit, onDecision, variant = 'edit' }) => {
+    const isScript = variant === 'script';
+
     useInput((input: string, key: { return?: boolean; escape?: boolean }) => {
         const lower = input.toLowerCase();
         if (lower === 'y' || key.return) {
@@ -34,7 +37,7 @@ const DiffReview: React.FC<DiffReviewProps> = ({ edit, onDecision }) => {
         <Box flexDirection="column" marginY={1}>
             <Box borderStyle="round" borderColor="yellow" paddingX={2} flexDirection="column">
                 <Text bold color="yellow">
-                    Review: {edit.path}
+                    {isScript ? 'Execute' : 'Review'}: {edit.path}
                 </Text>
                 <Box marginTop={1} flexDirection="column">
                     {(edit.diffLines ?? []).map((line, i) => (
@@ -43,7 +46,9 @@ const DiffReview: React.FC<DiffReviewProps> = ({ edit, onDecision }) => {
                 </Box>
                 <Box marginTop={1}>
                     <Text color="yellow" bold>
-                        Apply changes? [Y] Accept  [N] Reject
+                        {isScript
+                            ? 'Execute script? [Y] Accept  [N] Reject'
+                            : 'Apply changes? [Y] Accept  [N] Reject'}
                     </Text>
                 </Box>
             </Box>

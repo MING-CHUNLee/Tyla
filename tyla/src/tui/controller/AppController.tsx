@@ -168,7 +168,7 @@ const AppController: React.FC<AppControllerProps> = ({ config }) => {
         // §2.6: tutor file reads are @-gated — nudge (once) when no @ token is present.
         if (config?.tutorMode && !FILE_MENTION_RE.test(userInput) && !atHintShownRef.current) {
             atHintShownRef.current = true;
-            addStatusMessage('提示：可用 @檔名（如 @hw2.R）將檔案內容帶給 tutor');
+            addStatusMessage('Tip: type @filename (e.g. @hw2.R) to share a file with the tutor.');
         }
 
         // Run agent

@@ -169,12 +169,13 @@ describe('ExecuteTutorUseCase — Option B', () => {
         expect(fileSystem.write).not.toHaveBeenCalled();
     });
 
-    it('backend warnings are surfaced as status_update warnings (§2.7)', async () => {
+    it('backend warnings are surfaced as status_update warnings (§2.7, plan 2026-06-12 §4)', async () => {
         const { deps, events } = makeOptionB({
             tutor: {
                 status: 'done', logId: 7, content: 'hint', actions: [],
                 guardSkipped: false, usage: { inputTokens: 1, outputTokens: 1 },
-                warnings: ['file_context_dropped', 'history_truncated', 'reference_loaded'],
+                warnings: ['file_context_dropped', 'history_truncated', 'reference_loaded',
+                           'workspace_overview_dropped', 'edit_file_redirected'],
             },
         });
         const useCase = new ExecuteTutorUseCase(deps);
@@ -184,9 +185,11 @@ describe('ExecuteTutorUseCase — Option B', () => {
         const warnings = events
             .filter(e => e.type === 'status_update' && typeof e.data.warning === 'string')
             .map(e => e.data.warning as string);
-        expect(warnings.some(w => w.includes('檔案內容超過後端預算'))).toBe(true);
-        expect(warnings.some(w => w.includes('對話歷史過長'))).toBe(true);
-        expect(warnings.some(w => w.includes('調閱了參考解答'))).toBe(true);
+        expect(warnings.some(w => w.includes('Your file exceeded the backend budget'))).toBe(true);
+        expect(warnings.some(w => w.includes('conversation history was too long'))).toBe(true);
+        expect(warnings.some(w => w.includes('consulted the reference solution'))).toBe(true);
+        expect(warnings.some(w => w.includes('workspace file list exceeded the backend budget'))).toBe(true);
+        expect(warnings.some(w => w.includes('loaded the file first'))).toBe(true);
     });
 
     it('execute_script rejected emits script_rejected and never runs r_exec', async () => {
@@ -249,8 +252,16 @@ function capturedFileContext(deps: ExecuteTutorDeps): string {
     return send.mock.calls[0][3] as string;
 }
 
+/** Pull the workspace_overview (5th arg) handed to tutorChatGateway.send(). */
+function capturedWorkspaceOverview(deps: ExecuteTutorDeps): string {
+    const send = deps.tutorChatGateway!.send as ReturnType<typeof vi.fn>;
+    return send.mock.calls[0][4] as string;
+}
+
 describe('ExecuteTutorUseCase — @-gated file_context (plan 2026-06-11 §2.4)', () => {
-    it('omits the File Contents block when the instruction has no @ mention', async () => {
+    it('sends the scan summary as workspace_overview and no file_context when no @ mention', async () => {
+        // plan 2026-06-12 §4: the cheap manifest now rides the separate
+        // `workspace_overview` channel; file_context stays empty until a file is loaded.
         const files = [{ name: 'hw2.R', path: '/project/hw2.R' }];
         const setup = makeReadRegistry(files, () => 'x <- 1\n');
         const { deps } = makeOptionB(setup);
@@ -258,9 +269,8 @@ describe('ExecuteTutorUseCase — @-gated file_context (plan 2026-06-11 §2.4)',
 
         await useCase.execute('explain my homework please', []);
 
-        const fileContext = capturedFileContext(deps);
-        expect(fileContext).toContain('## Project Context');      // name-only list stays
-        expect(fileContext).not.toContain('## File Contents');
+        expect(capturedWorkspaceOverview(deps)).toContain('scan summary');   // name-only list rides workspace_overview
+        expect(capturedFileContext(deps)).toBeFalsy();                       // no @-mention → no loaded contents
         expect(setup.fileSystem.readBuffer).not.toHaveBeenCalled();
     });
 
@@ -275,6 +285,20 @@ describe('ExecuteTutorUseCase — @-gated file_context (plan 2026-06-11 §2.4)',
         expect(fileContext).toContain('## File Contents');
         expect(fileContext).toContain('### hw2.R');
         expect(fileContext).toContain('1| x <- 1\n2| y <- 2');
+    });
+
+    it('sends workspace_overview and file_context together for an @-mentioned file (plan 2026-06-12 §4)', async () => {
+        const files = [{ name: 'hw2.R', path: '/project/hw2.R' }];
+        const { deps } = makeOptionB(makeReadRegistry(files, () => 'x <- 1\n'));
+        const useCase = new ExecuteTutorUseCase(deps);
+
+        await useCase.execute('look at @hw2.R', []);
+
+        // overview (cheap manifest) and live numbered contents travel in separate channels
+        expect(capturedWorkspaceOverview(deps)).toContain('scan summary');
+        const fileContext = capturedFileContext(deps);
+        expect(fileContext).toContain('### hw2.R');                 // load-bearing header for the gate
+        expect(fileContext).not.toContain('scan summary');          // overview never leaks into file_context
     });
 
     it('matches @ tokens against scanned basenames case-insensitively', async () => {

@@ -44,9 +44,14 @@ const FILE_MENTION_RE = /@([\w\-./\\]+)/g;
 // safety net for the backend's whole-or-drop trimming; the per-turn budget
 // above is the primary defence (graceful head-truncation).
 const BACKEND_WARNING_MESSAGES: Record<string, string> = {
-    file_context_dropped: '檔案內容超過後端預算，本回合 tutor 沒有看到你的檔案',
-    history_truncated:    '對話歷史過長，較早的回合已被省略',
-    reference_loaded:     'tutor 本回合調閱了參考解答',
+    file_context_dropped: 'Your file exceeded the backend budget, so the tutor could not see it this turn',
+    history_truncated:    'The conversation history was too long, so earlier turns were omitted',
+    reference_loaded:     'The tutor consulted the reference solution this turn',
+    // plan 2026-06-12 §4: the cheap workspace manifest was dropped to fit the budget.
+    workspace_overview_dropped: 'The workspace file list exceeded the backend budget, so the tutor could not see the full file list this turn',
+    // plan 2026-06-12 §2.2: the tutor tried to edit a file it had not loaded; the
+    // backend rewrote the edit to load_file, so the real edit lands one turn later.
+    edit_file_redirected: 'The tutor tried to edit a file it had not loaded yet, so it loaded the file first (this costs one extra turn)',
 };
 
 const MAX_CONTINUATIONS = 3;   // hard termination invariant (b3 §4.4, §8); lower to 2 after Phase 0
@@ -160,11 +165,13 @@ export class ExecuteTutorUseCase {
     // ── Option B orchestration ────────────────────────────────────────────────
 
     private async callGateway(instruction: string, history: SessionMessage[]): Promise<TutorResult> {
-        // ── 1. file_context (reuses scan + read helpers) ───────────────────────
+        // ── 1. workspace_overview + file_context (reuses scan + read helpers) ──
         // Single budget instance for the whole turn: base reads and B3 continuation
-        // loads draw from one shared pool (gap-list §C, b3 §2.3).
+        // loads draw from one shared pool (gap-list §C, b3 §2.3). The scan summary
+        // travels in the separate `workspace_overview` channel (plan 2026-06-12 §4);
+        // `baseFileContext` carries only @-mentioned numbered contents.
         const budget = new FileContextBudget(PER_TURN_FILE_CONTEXT_TOKEN_CAP);
-        const baseContext = await this.buildFileContext(instruction, budget);
+        const { workspaceOverview, fileContext: baseFileContext } = await this.buildContext(instruction, budget);
 
         // ── 2. Guard pre-call ──────────────────────────────────────────────────
         this.deps.emit('phase_start', { phase: 'guard', description: 'Running safety check' });
@@ -197,14 +204,22 @@ export class ExecuteTutorUseCase {
         let usage = toTurnUsage(guard.usage);
 
         for (let i = 0; ; i++) {
+            // file_context carries ONLY loaded numbered contents (@-mentions +
+            // load_file resolutions). Each block already opens with its
+            // `### <path>` header — the wire format the backend's edit_file gate
+            // parses (plan 2026-06-12 §2.2/§4). Empty when nothing has been loaded.
             const fileContext = loadedBlocks.length
-                ? `${baseContext}\n\n## Files Loaded On Request\n${loadedBlocks.join('\n')}`
-                : baseContext;
+                ? [baseFileContext, `## Files Loaded On Request\n${loadedBlocks.join('\n')}`].filter(Boolean).join('\n\n')
+                : baseFileContext;
 
             this.deps.emit('phase_start', { phase: 'tutor', description: i === 0 ? 'Calling tutor API' : `Continuation ${i}` });
             let result;
             try {
-                result = await this.deps.tutorChatGateway.send(instruction, history, guard.logId, fileContext);
+                result = await this.deps.tutorChatGateway.send(
+                    instruction, history, guard.logId,
+                    fileContext || undefined,
+                    workspaceOverview || undefined,
+                );
             } catch (error) {
                 return this.failTutor('tutor', error);
             }
@@ -343,22 +358,30 @@ export class ExecuteTutorUseCase {
         this.deps.emit('tool_result_r_exec', { data: res.data ?? { stdout: res.content } });
     }
 
-    // ── file_context assembly (Option B) ──────────────────────────────────────
+    // ── workspace_overview + file_context assembly (Option B) ─────────────────
 
-    private async buildFileContext(instruction: string, budget: FileContextBudget): Promise<string> {
+    private async buildContext(
+        instruction: string,
+        budget: FileContextBudget,
+    ): Promise<{ workspaceOverview: string; fileContext: string }> {
         this.deps.emit('phase_start', { phase: 'scan', description: 'Building file context' });
         // file_scan stays unconditional but name-only (decision 1): the cheap
-        // Project Context list is what lets the B3 load_file loop know which
-        // workspace files it can request. Content reads are @-gated below.
+        // scan summary is what lets the B3 load_file loop know which workspace
+        // files it can request. Content reads are @-gated below.
         const { projectContext, scannedFiles } = await this.buildProjectContext();
         const fileContents = await this.readMentionedFiles(instruction, scannedFiles, budget);
         this.deps.emit('phase_end', { phase: 'scan', success: true });
 
-        const parts: string[] = [];
-        if (projectContext) parts.push(`## Project Context\n${projectContext}`);
-        if (fileContents)   parts.push(`## File Contents\n${fileContents}`);
-
-        return parts.join('\n\n');
+        return {
+            // Cheap manifest (no contents/line numbers) → `workspace_overview`. The
+            // backend renders it under `## Student Workspace (overview)` + the
+            // load-file guide and never appends a line-number guide for it.
+            workspaceOverview: projectContext,
+            // Numbered contents of @-mentioned files only → `file_context`
+            // (`## Student Workspace (live)`). Empty when the student named no file;
+            // the overview alone is then sent so the model knows to `load_file` first.
+            fileContext: fileContents ? `## File Contents\n${fileContents}` : '',
+        };
     }
 
     /**
