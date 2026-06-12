@@ -155,6 +155,12 @@ export const TYLA_API = {
     PORT: Number(process.env.TYLA_API_PORT ?? 9292),
     /** Default request timeout (60 seconds — LLM judge calls can be slow) */
     DEFAULT_TIMEOUT_MS: 60_000,
+    /**
+     * Tutor chat timeout. The backend may make two LLM calls per request
+     * (hybrid lazy solution loading, plan 2026-06-11 §3), each bounded by its
+     * 30s READ_TIMEOUT — so this must exceed 60s plus assembly/network overhead.
+     */
+    TUTOR_TIMEOUT_MS: 90_000,
 } as const;
 
 // ============================================

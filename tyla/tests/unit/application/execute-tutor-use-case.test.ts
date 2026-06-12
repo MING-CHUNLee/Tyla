@@ -174,7 +174,7 @@ describe('ExecuteTutorUseCase — Option B', () => {
             tutor: {
                 status: 'done', logId: 7, content: 'hint', actions: [],
                 guardSkipped: false, usage: { inputTokens: 1, outputTokens: 1 },
-                warnings: ['file_context_dropped', 'history_truncated'],
+                warnings: ['file_context_dropped', 'history_truncated', 'reference_loaded'],
             },
         });
         const useCase = new ExecuteTutorUseCase(deps);
@@ -186,6 +186,7 @@ describe('ExecuteTutorUseCase — Option B', () => {
             .map(e => e.data.warning as string);
         expect(warnings.some(w => w.includes('檔案內容超過後端預算'))).toBe(true);
         expect(warnings.some(w => w.includes('對話歷史過長'))).toBe(true);
+        expect(warnings.some(w => w.includes('調閱了參考解答'))).toBe(true);
     });
 
     it('execute_script rejected emits script_rejected and never runs r_exec', async () => {

@@ -36,7 +36,7 @@ export class TutorChatGateway {
         private readonly directory?: string,
     ) {
         this.baseUrl = `http://${TYLA_API.HOST}:${TYLA_API.PORT}`;
-        this.timeout = TYLA_API.DEFAULT_TIMEOUT_MS;
+        this.timeout = TYLA_API.TUTOR_TIMEOUT_MS;
     }
 
     async send(

@@ -46,6 +46,7 @@ const FILE_MENTION_RE = /@([\w\-./\\]+)/g;
 const BACKEND_WARNING_MESSAGES: Record<string, string> = {
     file_context_dropped: '檔案內容超過後端預算，本回合 tutor 沒有看到你的檔案',
     history_truncated:    '對話歷史過長，較早的回合已被省略',
+    reference_loaded:     'tutor 本回合調閱了參考解答',
 };
 
 const MAX_CONTINUATIONS = 3;   // hard termination invariant (b3 §4.4, §8); lower to 2 after Phase 0
