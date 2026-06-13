@@ -163,7 +163,7 @@ renders `content`, then dispatches each action:
 
 ```ts
 type TutorAction =
-  | { type: 'edit_file';      path: string; patches: Array<{ search: string; replace: string }> }
+  | { type: 'edit_file';      path: string; patches: Array<{ start_line: number; search: string; replace: string }> }
   | { type: 'execute_script'; code: string }
   | { type: 'load_file';      path: string };
 ```
@@ -176,6 +176,12 @@ type TutorAction =
 
 Rules the frontend relies on (enforced by the backend prompt):
 - `edit_file` uses **search-replace patches**, never full file content (4000-token output ceiling).
+- Each patch carries **`start_line`** (1-based, the file line of `search`'s first line, read from
+  the `N| ` prefix in the workspace context) plus **plain** `search`/`replace` content — no `N| `
+  prefixes (plan [2026-06-13](../plans/2026-06-13-edit-file-line-anchor.md)). The frontend
+  **anchors on `start_line`, verifies the slice against `search`** (CRLF-normalised), and applies
+  only on a match — a mismatch is rejected, never silently misapplied. A patch missing `start_line`
+  (XML fallback) degrades to a unique full-line text match.
 - `execute_script` is **read-only** — changing files is `edit_file`'s job (which gets a diff).
 - **No `actions` on `forbidden`/`error`.**
 

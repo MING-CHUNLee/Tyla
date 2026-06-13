@@ -23,7 +23,7 @@ import { TutorAction, EditPatch } from '../../shared/types/tutor-actions';
 import { ContinuationFileLoader } from '../services/continuation-file-loader';
 import { PathConfinement } from '../../domain/policies/path-confinement';
 import { extractPdfText } from '../../infrastructure/pdf/pdf-text-extractor';
-import { AnchoredLine, parseNumberedLines, stripLineNumberPrefixes } from '../services/line-numbering';
+import { stripLineNumberPrefixes } from '../services/line-numbering';
 
 // ── file_context token budget (plan 2026-06-11 §2.4) ─────────────────────────
 // One shared per-turn pool for @-mentioned files AND B3 continuation loads —
@@ -84,51 +84,80 @@ export interface TutorResult {
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
 /**
- * Two-layer patch application (plan 2026-06-11 §2.3).
+ * Patch application — line anchor + content verify (plan 2026-06-13 §2 decision B,
+ * §5 front-end algorithm).
  *
- * Layer 1 — anchored: `search` lines carry `N| ` prefixes pointing at real file
- * lines. Verify the file slice matches the de-prefixed search (trimEnd-loose to
- * tolerate trailing whitespace), then splice in the de-prefixed replace. Anchors
- * all reference ORIGINAL line numbers, so anchored patches apply bottom-up —
- * earlier anchors are unaffected when a later patch changes the line count.
- * The verification doubles as stale-context protection: if the student edited
- * the file since the numbers were issued, the mismatch demotes the patch to…
+ * Each patch carries `start_line` (1-based, the file line of `search`'s first line —
+ * the model reads it from the `N| ` prefix the live workspace context shows it) plus
+ * PLAIN `search`/`replace` content (no prefixes). For each anchored patch we:
+ *   1. anchor at `start_line`, take the file slice of the same length as `search`;
+ *   2. verify it matches `search` line-for-line — CRLF-normalised (workspace files
+ *      are `\r\n`; plan §7 D3) and trailing-whitespace-loose;
+ *   3. on match, splice in `replace`; on mismatch, REJECT + warn — never silently
+ *      edit the wrong line. The content check is the last gate against an off-by-one
+ *      or hallucinated `start_line` (plan §7 D1) and against stale context.
  *
- * Layer 2 — text fallback: strip any prefixes and replace the first occurrence
- * (the pre-line-number behaviour). Both layers failing → skip-and-warn.
+ * Anchors reference ORIGINAL line numbers, so anchored patches apply bottom-up — a
+ * later splice never shifts an earlier (smaller) anchor.
+ *
+ * Defensive (plan §5.4 / §7 D4):
+ *   - A patch with no usable `start_line` (XML fallback) degrades to a UNIQUE text
+ *     match — applied only if `search` occurs exactly once, else rejected. Never a
+ *     blind first-occurrence replace.
+ *   - Any stray `N| ` prefix a model still jams into search/replace is stripped.
  */
-function applyNumberedPatches(original: string, patches: EditPatch[], warn: (m: string) => void): string {
-    const anchored: Array<{ start: number; searchLines: AnchoredLine[]; replace: string }> = [];
-    const textPatches: EditPatch[] = [];
-    for (const patch of patches) {
-        const parsed = parseNumberedLines(patch.search);
-        if (parsed) anchored.push({ start: parsed[0].lineNo, searchLines: parsed, replace: patch.replace });
-        else textPatches.push(patch);
-    }
+function applyAnchoredPatches(original: string, patches: EditPatch[], warn: (m: string) => void): string {
+    // Detect EOL once; split into pure content lines so CRLF never leaks into the
+    // comparison and the rejoined file keeps a single, consistent line ending.
+    const eol = original.includes('\r\n') ? '\r\n' : '\n';
+    const lines = original.split(/\r?\n/);
 
-    const lines = original.split('\n');
-    anchored.sort((a, b) => b.start - a.start);                     // bottom-up
-    for (const { start, searchLines, replace } of anchored) {
-        const idx = start - 1;
-        const slice = lines.slice(idx, idx + searchLines.length);
-        const matches = idx >= 0 && idx + searchLines.length <= lines.length
-            && searchLines.every((searchLine, i) => slice[i].trimEnd() === searchLine.text.trimEnd());
-        if (matches) {
-            const replaceLines = replace === '' ? [] : stripLineNumberPrefixes(replace).split('\n');
-            lines.splice(idx, searchLines.length, ...replaceLines);
+    // The verify gate: CRLF- and trailing-whitespace-loose line equality.
+    const sameLine = (a: string, b: string) => a.trimEnd() === b.trimEnd();
+    const searchLinesOf = (s: string) => stripLineNumberPrefixes(s).split(/\r?\n/);
+    const replaceLinesOf = (r: string) => (r === '' ? [] : stripLineNumberPrefixes(r).split(/\r?\n/));
+    const isAnchor = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 1;
+
+    const anchored: Array<{ start: number; searchLines: string[]; replace: string }> = [];
+    const fallback: EditPatch[] = [];
+    for (const patch of patches) {
+        if (isAnchor(patch.start_line)) {
+            anchored.push({ start: patch.start_line, searchLines: searchLinesOf(patch.search), replace: patch.replace });
         } else {
-            warn(`line anchor ${start} did not match current file content — falling back to text search`);
-            textPatches.push({ search: searchLines.map(l => l.text).join('\n'), replace });
+            fallback.push(patch);
         }
     }
 
-    let out = lines.join('\n');
-    for (const { search, replace } of textPatches) {
-        const plainSearch = stripLineNumberPrefixes(search);
-        if (!out.includes(plainSearch)) { warn(`patch search text not found, skipped`); continue; }
-        out = out.replace(plainSearch, stripLineNumberPrefixes(replace)); // first occurrence only
+    // Anchored: bottom-up so a splice never invalidates an earlier (smaller) anchor.
+    anchored.sort((a, b) => b.start - a.start);
+    for (const { start, searchLines, replace } of anchored) {
+        const idx = start - 1;
+        const inRange = idx >= 0 && idx + searchLines.length <= lines.length;
+        const matches = inRange && searchLines.every((s, i) => sameLine(lines[idx + i], s));
+        if (matches) {
+            lines.splice(idx, searchLines.length, ...replaceLinesOf(replace));
+        } else {
+            warn(`line ${start} no longer matches the tutor's expected content — edit skipped (re-load the file and try again)`);
+        }
     }
-    return out;
+
+    // Fallback (no usable start_line): apply ONLY on a unique full-line match.
+    for (const { search, replace } of fallback) {
+        const searchLines = searchLinesOf(search);
+        const hits: number[] = [];
+        for (let i = 0; i + searchLines.length <= lines.length; i++) {
+            if (searchLines.every((s, j) => sameLine(lines[i + j], s))) hits.push(i);
+        }
+        if (hits.length === 1) {
+            lines.splice(hits[0], searchLines.length, ...replaceLinesOf(replace));
+        } else if (hits.length === 0) {
+            warn(`patch search text not found, skipped`);
+        } else {
+            warn(`patch search text is ambiguous (${hits.length} matches) and has no line anchor — skipped`);
+        }
+    }
+
+    return lines.join(eol);
 }
 
 function toTurnUsage(u: { inputTokens: number; outputTokens: number }): TurnUsage {
@@ -312,7 +341,7 @@ export class ExecuteTutorUseCase {
             original = ''; // new file
         }
 
-        const proposed = applyNumberedPatches(original, action.patches,
+        const proposed = applyAnchoredPatches(original, action.patches,
             (msg) => this.deps.emit('status_update', { warning: `edit_file ${action.path}: ${msg}` }));
 
         // stageOnly() does NOT push to the drain queue (the tutor applies per-action, never

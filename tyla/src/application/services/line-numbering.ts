@@ -1,15 +1,19 @@
 /**
- * Service: line numbering for tutor file_context (plan 2026-06-11 §2.1)
+ * Service: line numbering for tutor file_context (plan 2026-06-11 §2.1; patch
+ * contract updated 2026-06-13).
  *
- * Front-end ↔ back-end convention: every line of a live workspace file sent to
+ * Front-end → back-end convention: every line of a live workspace file sent to
  * the tutor is prefixed with its REAL file line number, right-aligned:
  *
  *     1| library(ggplot2)
  *     2| d123 <- rnorm(100)
  *
- * The LLM copies these prefixes verbatim into `edit_file.patches[].search`
- * (the anchoring key) and omits them in `replace`. add/strip are kept in the
- * same module so the format stays symmetric.
+ * The LLM READS these prefixes to fill `edit_file.patches[].start_line` (the
+ * anchoring key, plan 2026-06-13 §2) and keeps `search`/`replace` as PLAIN
+ * content — no prefixes. `stripLineNumberPrefixes` survives as a defensive net
+ * for a model that still jams a prefix into search/replace out of old habit
+ * (plan §7 D4); the apply algorithm anchors on `start_line`, not on parsing
+ * prefixes out of `search`.
  *
  * Strip regex: /^\s*\d+\| ?/ — `|` was chosen over tab/arrow because R's `|>`
  * never appears at line start right after a digit, so false strips are
@@ -17,7 +21,6 @@
  */
 
 const PREFIX_RE = /^\s*\d+\| ?/;
-const PARSE_RE = /^\s*(\d+)\| ?(.*)$/;
 
 /**
  * Prefix every line with its 1-based line number (`  1| code`), right-aligned
@@ -42,32 +45,4 @@ export function stripLineNumberPrefixes(text: string): string {
         .split('\n')
         .map(line => line.replace(PREFIX_RE, ''))
         .join('\n');
-}
-
-export interface AnchoredLine {
-    /** 1-based real-file line number parsed from the prefix. */
-    lineNo: number;
-    /** Line content with the prefix removed (may keep a trailing \r from CRLF input). */
-    text: string;
-}
-
-/**
- * Parse a numbered snippet into anchored lines. Returns the lines only when
- * EVERY line carries a number prefix and the numbers are strictly consecutive
- * — anything else returns null so callers fall back to plain text search.
- */
-export function parseNumberedLines(s: string): AnchoredLine[] | null {
-    if (s === '') return null;
-    const raw = s.endsWith('\n') ? s.slice(0, -1) : s;
-    const lines = raw.split('\n');
-    const anchored: AnchoredLine[] = [];
-    for (const line of lines) {
-        const m = PARSE_RE.exec(line);
-        if (!m) return null;
-        const lineNo = Number(m[1]);
-        const prev = anchored[anchored.length - 1];
-        if (prev && lineNo !== prev.lineNo + 1) return null;
-        anchored.push({ lineNo, text: m[2] });
-    }
-    return anchored;
 }

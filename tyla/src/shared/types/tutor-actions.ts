@@ -8,8 +8,17 @@
  * Matches docs/api.md §7 and backend api_tutor_chats.md.
  */
 
-/** A search-replace patch — never full file content (4000-token LLM output ceiling). */
+/**
+ * A search-replace patch — never full file content (4000-token LLM output ceiling).
+ *
+ * `start_line` (1-based, plan 2026-06-13 §2/§3) is the file line number of `search`'s
+ * first line, read by the model from the `N| ` prefix the workspace context shows it.
+ * `search`/`replace` are PLAIN content (no `N| ` prefixes). The backend marks it
+ * required, but it stays optional here so an XML-fallback reply that omits it still
+ * applies (degrades to a unique text match — see applyAnchoredPatches).
+ */
 export interface EditPatch {
+    start_line?: number;
     search: string;
     replace: string;
 }
@@ -33,10 +42,15 @@ export function isTutorAction(value: unknown): value is TutorAction {
     switch (a.type) {
         case 'edit_file':
             return typeof a.path === 'string' && Array.isArray(a.patches) &&
-                a.patches.every(p =>
-                    typeof p === 'object' && p !== null &&
-                    typeof (p as EditPatch).search === 'string' &&
-                    typeof (p as EditPatch).replace === 'string');
+                a.patches.every(p => {
+                    if (typeof p !== 'object' || p === null) return false;
+                    const patch = p as EditPatch;
+                    return typeof patch.search === 'string' &&
+                        typeof patch.replace === 'string' &&
+                        // start_line is required by the backend schema but optional on the
+                        // wire (XML fallback); when present it must be a number.
+                        (patch.start_line === undefined || typeof patch.start_line === 'number');
+                });
         case 'execute_script':
             return typeof a.code === 'string';
         case 'load_file':

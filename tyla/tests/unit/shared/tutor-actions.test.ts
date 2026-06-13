@@ -6,12 +6,28 @@ import { describe, it, expect } from 'vitest';
 import { isTutorAction } from '../../../src/shared/types/tutor-actions';
 
 describe('isTutorAction', () => {
-    it('accepts a well-formed edit_file action', () => {
+    it('accepts a well-formed edit_file action with a start_line anchor', () => {
+        expect(isTutorAction({
+            type: 'edit_file',
+            path: 'hw11.R',
+            patches: [{ start_line: 9, search: 'a', replace: 'b' }],
+        })).toBe(true);
+    });
+
+    it('accepts an edit_file patch without start_line (XML fallback / backward compat)', () => {
         expect(isTutorAction({
             type: 'edit_file',
             path: 'hw11.R',
             patches: [{ search: 'a', replace: 'b' }],
         })).toBe(true);
+    });
+
+    it('rejects an edit_file patch whose start_line is not a number', () => {
+        expect(isTutorAction({
+            type: 'edit_file',
+            path: 'hw11.R',
+            patches: [{ start_line: '9', search: 'a', replace: 'b' }],
+        })).toBe(false);
     });
 
     it('accepts an edit_file with an empty patches array', () => {

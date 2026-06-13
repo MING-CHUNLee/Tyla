@@ -1,12 +1,13 @@
 /**
  * Unit Tests: line-numbering (plan 2026-06-11 §2.1)
  *
- * add/strip roundtrip, CRLF, empty input, and the strictness of
- * parseNumberedLines (all lines numbered AND consecutive, else null).
+ * add/strip roundtrip, CRLF, empty input. (Prefix parsing is gone: the patch
+ * contract anchors on `start_line`, not on parsing prefixes out of `search` —
+ * plan 2026-06-13 §2.)
  */
 
 import { describe, it, expect } from 'vitest';
-import { addLineNumbers, stripLineNumberPrefixes, parseNumberedLines } from '../../../src/application/services/line-numbering';
+import { addLineNumbers, stripLineNumberPrefixes } from '../../../src/application/services/line-numbering';
 
 describe('addLineNumbers', () => {
     it('prefixes each line with its 1-based number', () => {
@@ -54,38 +55,5 @@ describe('stripLineNumberPrefixes', () => {
 
     it('does not touch R pipe operators mid-line', () => {
         expect(stripLineNumberPrefixes('1| d |> filter(x > 2)')).toBe('d |> filter(x > 2)');
-    });
-});
-
-describe('parseNumberedLines', () => {
-    it('parses fully numbered consecutive lines', () => {
-        expect(parseNumberedLines(' 9| a\n10| b\n11| c')).toEqual([
-            { lineNo: 9, text: 'a' },
-            { lineNo: 10, text: 'b' },
-            { lineNo: 11, text: 'c' },
-        ]);
-    });
-
-    it('tolerates a trailing newline', () => {
-        expect(parseNumberedLines('1| a\n2| b\n')).toEqual([
-            { lineNo: 1, text: 'a' },
-            { lineNo: 2, text: 'b' },
-        ]);
-    });
-
-    it('returns null when any line lacks a number', () => {
-        expect(parseNumberedLines('1| a\nb\n3| c')).toBeNull();
-    });
-
-    it('returns null when numbers are not consecutive', () => {
-        expect(parseNumberedLines('1| a\n3| c')).toBeNull();
-    });
-
-    it('returns null for empty input', () => {
-        expect(parseNumberedLines('')).toBeNull();
-    });
-
-    it('captures empty line content', () => {
-        expect(parseNumberedLines('4| ')).toEqual([{ lineNo: 4, text: '' }]);
     });
 });

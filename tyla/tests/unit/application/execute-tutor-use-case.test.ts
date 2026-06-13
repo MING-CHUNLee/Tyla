@@ -135,7 +135,7 @@ describe('ExecuteTutorUseCase — Option B', () => {
         const { deps, events } = makeOptionB({
             tutor: {
                 status: 'done', logId: 7, content: 'Try this',
-                actions: [{ type: 'edit_file', path: 'hw11.R', patches: [{ search: 'old', replace: 'new' }] }],
+                actions: [{ type: 'edit_file', path: 'hw11.R', patches: [{ start_line: 1, search: 'old code', replace: 'new code' }] }],
                 guardSkipped: false, usage: { inputTokens: 3, outputTokens: 4 },
             },
             onApproval: vi.fn().mockResolvedValue(true),
@@ -155,7 +155,7 @@ describe('ExecuteTutorUseCase — Option B', () => {
         const { deps, events } = makeOptionB({
             tutor: {
                 status: 'done', logId: 7, content: 'Try this',
-                actions: [{ type: 'edit_file', path: 'hw11.R', patches: [{ search: 'old', replace: 'new' }] }],
+                actions: [{ type: 'edit_file', path: 'hw11.R', patches: [{ start_line: 1, search: 'old code', replace: 'new code' }] }],
                 guardSkipped: false, usage: { inputTokens: 3, outputTokens: 4 },
             },
             onApproval: vi.fn().mockResolvedValue(false),
@@ -388,9 +388,10 @@ describe('ExecuteTutorUseCase — file_context budget (per-turn pool only)', () 
     });
 });
 
-// ── edit_file numbered patches (plan 2026-06-11 §2.3) ─────────────────────────
-// Layer 1: line-number anchors locate the exact lines (duplicates resolved);
-// Layer 2: stale/missing anchors fall back to first-occurrence text search.
+// ── edit_file patches: line anchor + content verify (plan 2026-06-13 §2/§5) ───
+// `start_line` (1-based) locates the lines (duplicates resolved); plain `search`
+// content verifies the slice — mismatch REJECTS (no silent misapply). A patch
+// with no start_line (XML fallback) degrades to a unique full-line text match.
 
 const PATCH_ORIGINAL = [
     'x <- 1',
@@ -400,8 +401,10 @@ const PATCH_ORIGINAL = [
     'z <- 3',
 ].join('\n');
 
-function makePatchSetup(patches: Array<{ search: string; replace: string }>) {
-    const fileSystem = makeFs({ read: vi.fn().mockReturnValue(PATCH_ORIGINAL) });
+type TestPatch = { start_line?: number; search: string; replace: string };
+
+function makePatchSetup(patches: TestPatch[], original: string = PATCH_ORIGINAL) {
+    const fileSystem = makeFs({ read: vi.fn().mockReturnValue(original) });
     const { deps, events } = makeOptionB({
         tutor: {
             status: 'done', logId: 7, content: 'Patching',
@@ -417,10 +420,16 @@ function proposedContent(events: Array<{ type: string; data: Record<string, unkn
     return events.find(e => e.type === 'diff_proposed')?.data.proposed as string;
 }
 
-describe('ExecuteTutorUseCase — edit_file numbered patches (§2.3)', () => {
-    it('anchored patch edits the numbered occurrence, not the first duplicate', async () => {
+function warnings(events: Array<{ type: string; data: Record<string, unknown> }>): string[] {
+    return events
+        .filter(e => e.type === 'status_update' && typeof e.data.warning === 'string')
+        .map(e => e.data.warning as string);
+}
+
+describe('ExecuteTutorUseCase — edit_file patches: line anchor + verify (§2/§5)', () => {
+    it('start_line anchors the right duplicate, not the first occurrence', async () => {
         const { deps, events } = makePatchSetup([
-            { search: '4| quantile(d, probs = 0.5)', replace: 'quantile(d, probs = 0.95)' },
+            { start_line: 4, search: 'quantile(d, probs = 0.5)', replace: 'quantile(d, probs = 0.95)' },
         ]);
         await new ExecuteTutorUseCase(deps).execute('fix line 4', []);
 
@@ -433,23 +442,22 @@ describe('ExecuteTutorUseCase — edit_file numbered patches (§2.3)', () => {
         ].join('\n'));
     });
 
-    it('stale anchor falls back to text search with a warning', async () => {
-        // line 5 is 'z <- 3', not 'y <- 2' → anchor mismatch → text fallback hits line 3.
+    it('rejects the patch when the anchored content no longer matches (no silent misapply)', async () => {
+        // line 5 is 'z <- 3', not 'y <- 2' → content mismatch → REJECT. The file is
+        // unchanged, so nothing is proposed and line 3's 'y <- 2' is NOT silently edited.
         const { deps, events } = makePatchSetup([
-            { search: '5| y <- 2', replace: 'y <- 99' },
+            { start_line: 5, search: 'y <- 2', replace: 'y <- 99' },
         ]);
         await new ExecuteTutorUseCase(deps).execute('fix it', []);
 
-        expect(proposedContent(events)).toContain('y <- 99');
-        expect(events.some(e => e.type === 'status_update'
-            && typeof e.data.warning === 'string'
-            && (e.data.warning as string).includes('line anchor 5 did not match'))).toBe(true);
+        expect(events.some(e => e.type === 'diff_proposed')).toBe(false);
+        expect(warnings(events).some(w => w.includes('line 5 no longer matches'))).toBe(true);
     });
 
     it('applies multiple anchored patches bottom-up so earlier anchors survive', async () => {
         const { deps, events } = makePatchSetup([
-            { search: '1| x <- 1', replace: 'x0 <- 0\nx <- 1' },   // inserts a line above the rest
-            { search: '5| z <- 3', replace: 'z <- 30' },
+            { start_line: 1, search: 'x <- 1', replace: 'x0 <- 0\nx <- 1' },   // inserts a line above the rest
+            { start_line: 5, search: 'z <- 3', replace: 'z <- 30' },
         ]);
         await new ExecuteTutorUseCase(deps).execute('two edits', []);
 
@@ -463,9 +471,9 @@ describe('ExecuteTutorUseCase — edit_file numbered patches (§2.3)', () => {
         ].join('\n'));
     });
 
-    it('strips stray line-number prefixes from replace defensively', async () => {
+    it('strips stray N| prefixes a model jams into search/replace (defensive)', async () => {
         const { deps, events } = makePatchSetup([
-            { search: '3| y <- 2', replace: '3| y <- 42' },
+            { start_line: 3, search: '3| y <- 2', replace: '3| y <- 42' },
         ]);
         await new ExecuteTutorUseCase(deps).execute('fix it', []);
 
@@ -474,18 +482,45 @@ describe('ExecuteTutorUseCase — edit_file numbered patches (§2.3)', () => {
         expect(proposed).not.toContain('3|');
     });
 
-    it('un-numbered patch keeps the first-occurrence text-search behaviour', async () => {
+    it('CRLF: anchors and verifies against a \\r\\n file, preserving its line endings', async () => {
+        const crlf = ['x <- 1', 'y <- 2', 'z <- 3'].join('\r\n');
+        const { deps, events } = makePatchSetup(
+            [{ start_line: 2, search: 'y <- 2', replace: 'y <- 99' }],   // search uses \n; file is \r\n
+            crlf,
+        );
+        await new ExecuteTutorUseCase(deps).execute('fix it', []);
+
+        expect(proposedContent(events)).toBe(['x <- 1', 'y <- 99', 'z <- 3'].join('\r\n'));
+    });
+
+    it('no start_line (XML fallback): a unique full-line match still applies', async () => {
         const { deps, events } = makePatchSetup([
-            { search: 'quantile(d, probs = 0.5)', replace: 'quantile(d, probs = 0.25)' },
+            { search: 'y <- 2', replace: 'y <- 99' },          // occurs exactly once
         ]);
         await new ExecuteTutorUseCase(deps).execute('fix it', []);
 
         expect(proposedContent(events)).toBe([
-            'x <- 1',
-            'quantile(d, probs = 0.25)',          // first occurrence replaced …
-            'y <- 2',
-            'quantile(d, probs = 0.5)',           // … second untouched
-            'z <- 3',
+            'x <- 1', 'quantile(d, probs = 0.5)', 'y <- 99', 'quantile(d, probs = 0.5)', 'z <- 3',
         ].join('\n'));
+    });
+
+    it('no start_line + ambiguous match: rejects rather than guessing the occurrence', async () => {
+        const { deps, events } = makePatchSetup([
+            { search: 'quantile(d, probs = 0.5)', replace: 'quantile(d, probs = 0.25)' },   // 2 occurrences
+        ]);
+        await new ExecuteTutorUseCase(deps).execute('fix it', []);
+
+        expect(events.some(e => e.type === 'diff_proposed')).toBe(false);   // no blind first-occurrence edit
+        expect(warnings(events).some(w => w.includes('ambiguous'))).toBe(true);
+    });
+
+    it('no start_line + no match: skipped with a warning', async () => {
+        const { deps, events } = makePatchSetup([
+            { search: 'not in the file', replace: 'whatever' },
+        ]);
+        await new ExecuteTutorUseCase(deps).execute('fix it', []);
+
+        expect(events.some(e => e.type === 'diff_proposed')).toBe(false);
+        expect(warnings(events).some(w => w.includes('not found'))).toBe(true);
     });
 });
