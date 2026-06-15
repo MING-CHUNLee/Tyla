@@ -66,8 +66,9 @@ export type AgentEvent =
     | { type: 'tool_result_library';  data: { data: unknown } }
     | { type: 'tool_result_r_exec';   data: { data: unknown } }
     | { type: 'tool_result_r_install'; data: { data: unknown } }
-    | { type: 'continuation';     data: { iteration: number; loaded: string[]; intermediateContent: string } }
-    | { type: 'guard_blocked';    data: { reason: string; phase: string } }
+    | { type: 'continuation';       data: { iteration: number; loaded: string[]; intermediateContent: string } }
+    | { type: 'guard_blocked';      data: { reason: string; phase: string } }
+    | { type: 'debug_raw_actions';  data: { iteration: number; actions: unknown[] } }
     | { type: 'install_proposed'; data: {
         toInstall: string[];
         alreadyInstalled: string[];
@@ -282,7 +283,7 @@ export class AgentService {
             } catch {
                 return; // error already emitted by tutorUseCase
             }
-            this.session.addTurn(instruction, result.content, result.usage);
+            this.session.addTurn(instruction, result.content, result.usage, [], [], result.apiLogs);
             await this.repo.save(this.session);
             this.emitTurnSaved(result.usage);
             return;

@@ -9,7 +9,7 @@
  * All mutation happens through addTurn() — no direct array access.
  */
 
-import { ConversationTurn, TurnUsage, TurnJSON } from './conversation-turn';
+import { ConversationTurn, TurnUsage, TurnJSON, ApiLogEntry } from './conversation-turn';
 import { FileChange, FileChangeType } from './file-change';
 import { LLMOutput, LLMOutputType } from '../values/llm-output';
 import { TokenBudget, TokenUsageSnapshot } from '../values/token-budget';
@@ -125,6 +125,7 @@ export class ConversationSession {
         usage: TurnUsage,
         fileChanges?: FileChange[],
         outputs?: LLMOutput[],
+        apiLogs?: ApiLogEntry[],
     ): ConversationTurn {
         const turn = new ConversationTurn(
             this._turns.length + 1,
@@ -134,6 +135,7 @@ export class ConversationSession {
             undefined,
             fileChanges ?? [],
             outputs ?? [],
+            apiLogs ?? [],
         );
         this._turns.push(turn);
         this.accumulate(usage);

@@ -18,6 +18,14 @@ interface ArtifactJSON {
     createdAt: string;
 }
 
+/** One guard or tutor API exchange recorded per turn for audit / replay. */
+export interface ApiLogEntry {
+    timestamp: string;
+    source: 'guard' | 'tutor';
+    direction: 'request' | 'response';
+    payload: unknown;
+}
+
 export interface TurnUsage {
     inputTokens: number;
     outputTokens: number;
@@ -34,6 +42,7 @@ export interface TurnJSON {
     timestamp: string;
     fileChanges: FileChangeJSON[];
     outputs: LLMOutputJSON[];
+    apiLogs?: ApiLogEntry[];
     /** @deprecated Present only in sessions written before the FileChange/LLMOutput split. */
     artifacts?: ArtifactJSON[];
 }
@@ -49,6 +58,7 @@ export class ConversationTurn {
         timestamp?: Date,
         readonly fileChanges: FileChange[] = [],
         readonly outputs: LLMOutput[] = [],
+        readonly apiLogs: ApiLogEntry[] = [],
     ) {
         this.timestamp = timestamp ?? new Date();
     }
@@ -70,6 +80,7 @@ export class ConversationTurn {
             timestamp: this.timestamp.toISOString(),
             fileChanges: this.fileChanges.map(fc => fc.toJSON()),
             outputs: this.outputs.map(o => o.toJSON()),
+            ...(this.apiLogs.length > 0 ? { apiLogs: this.apiLogs } : {}),
         };
     }
 
@@ -112,6 +123,7 @@ export class ConversationTurn {
             new Date(data.timestamp),
             fileChanges,
             outputs,
+            data.apiLogs ?? [],
         );
     }
 }

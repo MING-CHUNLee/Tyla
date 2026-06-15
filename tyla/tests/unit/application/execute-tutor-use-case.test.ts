@@ -175,7 +175,7 @@ describe('ExecuteTutorUseCase — Option B', () => {
                 status: 'done', logId: 7, content: 'hint', actions: [],
                 guardSkipped: false, usage: { inputTokens: 1, outputTokens: 1 },
                 warnings: ['file_context_dropped', 'history_truncated', 'reference_loaded',
-                           'workspace_overview_dropped', 'edit_file_redirected'],
+                           'workspace_overview_dropped', 'edit_file_redirected', 'redundant_load_dropped'],
             },
         });
         const useCase = new ExecuteTutorUseCase(deps);
@@ -190,6 +190,7 @@ describe('ExecuteTutorUseCase — Option B', () => {
         expect(warnings.some(w => w.includes('consulted the reference solution'))).toBe(true);
         expect(warnings.some(w => w.includes('workspace file list exceeded the backend budget'))).toBe(true);
         expect(warnings.some(w => w.includes('loaded the file first'))).toBe(true);
+        expect(warnings.some(w => w.includes('tried to reload a file'))).toBe(true);
     });
 
     it('execute_script rejected emits script_rejected and never runs r_exec', async () => {
@@ -282,7 +283,9 @@ describe('ExecuteTutorUseCase — @-gated file_context (plan 2026-06-11 §2.4)',
         await useCase.execute('please look at @hw2.R', []);
 
         const fileContext = capturedFileContext(deps);
-        expect(fileContext).toContain('## File Contents');
+        // plan 2026-06-14 §C: no ## section headings in file_context — flat ### blocks only
+        expect(fileContext).not.toContain('## Files Loaded On Request');
+        expect(fileContext).not.toContain('## File Contents');
         expect(fileContext).toContain('### hw2.R');
         expect(fileContext).toContain('1| x <- 1\n2| y <- 2');
     });
@@ -329,6 +332,109 @@ describe('ExecuteTutorUseCase — @-gated file_context (plan 2026-06-11 §2.4)',
         expect(events.some(e => e.type === 'status_update'
             && typeof e.data.warning === 'string'
             && (e.data.warning as string).includes('missing.R'))).toBe(true);
+    });
+
+    // ── plan 2026-06-13 §5.1 C: @-mention dedup + unified section ─────────────
+
+    it('@-mention path seeds resolved — load_file for same path terminates loop in one call (plan §5.1 C)', async () => {
+        const files = [{ name: 'hw2.R', path: '/project/hw2.R' }];
+        const { deps } = makeOptionB({
+            ...makeReadRegistry(files, () => 'x <- 1\n'),
+            tutor: {
+                status: 'done', logId: 7, content: 'hint',
+                // Backend returns load_file for a file already loaded via @-mention
+                actions: [{ type: 'load_file', path: 'hw2.R' }],
+                guardSkipped: false, usage: { inputTokens: 3, outputTokens: 4 },
+            },
+        });
+        const useCase = new ExecuteTutorUseCase(deps);
+
+        await useCase.execute('look at @hw2.R', []);
+
+        // Exactly one tutor call — resolved.has() short-circuited madeProgress.
+        const send = deps.tutorChatGateway!.send as ReturnType<typeof vi.fn>;
+        expect(send).toHaveBeenCalledTimes(1);
+        // fileContext sent to the backend has exactly one ### hw2.R header.
+        const fc = capturedFileContext(deps);
+        expect((fc.match(/### hw2\.R/g) ?? []).length).toBe(1);
+    });
+
+    it('file_context has no ## section headings — flat ### blocks only (plan 2026-06-14 §C)', async () => {
+        const files = [{ name: 'hw2.R', path: '/project/hw2.R' }];
+        const { deps } = makeOptionB(makeReadRegistry(files, () => 'x <- 1\n'));
+        const useCase = new ExecuteTutorUseCase(deps);
+
+        await useCase.execute('look at @hw2.R', []);
+
+        const fc = capturedFileContext(deps);
+        expect(fc).not.toContain('## Files Loaded On Request');
+        expect(fc).not.toContain('## File Contents');
+        expect(fc).toContain('### hw2.R');
+    });
+
+    it('continuation: Round 2 dispatches edit_file for Rmd once Rmd is loaded in file_context (plan 2026-06-14 §4.2)', async () => {
+        // Scenario: @hw2.R mentioned; Round 1 backend redirects Hw2.Rmd edit → load_file;
+        // Round 2 backend sees both files in file_context and dispatches both edits.
+        const hw2Content = 'x <- 1\n';
+        const rmdContent = '---\ntitle: "Hw2"\n---\n';
+        const files = [
+            { name: 'hw2.R', path: '/project/hw2.R' },
+            { name: 'Hw2.Rmd', path: '/project/Hw2.Rmd' },
+        ];
+        const fileScan = {
+            execute: vi.fn().mockResolvedValue({ content: 'scan summary', data: { files: { rScripts: files } } }),
+        };
+        const contentFor = (p: string) => (p.endsWith('hw2.R') ? hw2Content : rmdContent);
+        const fileSystem = makeFs({
+            read:       vi.fn().mockImplementation(contentFor),
+            readBuffer: vi.fn().mockImplementation((p: string) => Buffer.from(contentFor(p))),
+        });
+
+        const tutorSend = vi.fn()
+            .mockResolvedValueOnce({
+                status: 'done', logId: 7, content: 'Round 1 hint',
+                actions: [
+                    { type: 'edit_file', path: 'hw2.R', patches: [{ start_line: 1, search: 'x <- 1', replace: 'x <- 2' }] },
+                    { type: 'load_file', path: 'Hw2.Rmd' },
+                ],
+                guardSkipped: false, warnings: ['edit_file_redirected'],
+                usage: { inputTokens: 3, outputTokens: 4 },
+            })
+            .mockResolvedValueOnce({
+                status: 'done', logId: 8, content: 'Round 2 hint',
+                actions: [
+                    { type: 'edit_file', path: 'hw2.R', patches: [{ start_line: 1, search: 'x <- 1', replace: 'x <- 2' }] },
+                    { type: 'edit_file', path: 'Hw2.Rmd', patches: [{ start_line: 1, search: '---', replace: '--- # corrected' }] },
+                ],
+                guardSkipped: false, warnings: [],
+                usage: { inputTokens: 5, outputTokens: 6 },
+            });
+
+        const { deps, events } = makeOptionB({
+            registryGet: (name: string) => (name === 'file_scan' ? fileScan : undefined),
+            fileSystem,
+            onApproval: vi.fn().mockResolvedValue(true),
+        });
+        deps.tutorChatGateway = { send: tutorSend } as unknown as TutorChatGateway;
+
+        await new ExecuteTutorUseCase(deps).execute('@hw2.R and also check Hw2.Rmd', []);
+
+        // tutor called exactly twice: Round 1 (madeProgress=true → load Hw2.Rmd) + Round 2 (terminal)
+        expect(tutorSend).toHaveBeenCalledTimes(2);
+
+        // Round 2 file_context contains both files under flat ### headers (no ## section headings)
+        const round2Fc = tutorSend.mock.calls[1][3] as string;
+        expect(round2Fc).toContain('### hw2.R');
+        expect(round2Fc).toContain('### Hw2.Rmd');
+        expect(round2Fc).not.toContain('## Files Loaded On Request');
+
+        // Terminal turn dispatches both edit_file actions
+        const diffPaths = events
+            .filter(e => e.type === 'diff_proposed')
+            .map(e => e.data.path as string);
+        expect(diffPaths).toHaveLength(2);
+        expect(diffPaths).toContain('hw2.R');
+        expect(diffPaths).toContain('Hw2.Rmd');
     });
 });
 

@@ -24,10 +24,18 @@ interface GuardCheckResponse {
 
 // ── Domain result ─────────────────────────────────────────────────────────────
 
+/** Raw HTTP request/response bodies captured for session audit log. */
+export interface GuardRawExchange {
+    requestBody: unknown;
+    requestAt: string;
+    responseBody: unknown;
+    responseAt: string;
+}
+
 export type GuardCheckResult =
-    | { status: 'done' | 'unavailable'; logId: number; guardSkipped: boolean; usage: Usage }
-    | { status: 'forbidden';            logId: number; refusal: string;        usage: Usage }
-    | { status: 'error';                message: string;                       usage: Usage };
+    | { status: 'done' | 'unavailable'; logId: number; guardSkipped: boolean; usage: Usage; rawExchange?: GuardRawExchange }
+    | { status: 'forbidden';            logId: number; refusal: string;        usage: Usage; rawExchange?: GuardRawExchange }
+    | { status: 'error';                message: string;                       usage: Usage; rawExchange?: GuardRawExchange };
 
 // ── Gateway ───────────────────────────────────────────────────────────────────
 
@@ -53,6 +61,7 @@ export class GuardCheckGateway {
             student_id: profile.studentId,
             prompt,
         };
+        const requestAt = new Date().toISOString();
         debugLog('guard', 'REQUEST', body);
 
         const response = await axios.post<GuardCheckResponse>(
@@ -68,16 +77,18 @@ export class GuardCheckGateway {
         );
 
         const data = response.data;
+        const responseAt = new Date().toISOString();
         debugLog('guard', 'RESPONSE', data);
+        const rawExchange: GuardRawExchange = { requestBody: body, requestAt, responseBody: data, responseAt };
 
         if (data.status === 'forbidden') {
-            return { status: 'forbidden', logId: data.log_id, refusal: data.refusal ?? '', usage: parseUsage(data.usage) };
+            return { status: 'forbidden', logId: data.log_id, refusal: data.refusal ?? '', usage: parseUsage(data.usage), rawExchange };
         }
 
         // decision doc §3.1: backend/judge error → surface to student, suggest retry.
         // No valid log_id is produced, so the turn must NOT proceed to tutor_chats.
         if (data.status === 'error') {
-            return { status: 'error', message: data.refusal ?? 'guard check failed', usage: parseUsage(data.usage) };
+            return { status: 'error', message: data.refusal ?? 'guard check failed', usage: parseUsage(data.usage), rawExchange };
         }
 
         const guardSkipped = data.status === 'unavailable';
@@ -85,6 +96,6 @@ export class GuardCheckGateway {
             this.onWarning?.('guard skipped: llm unavailable');
         }
 
-        return { status: data.status, logId: data.log_id, guardSkipped, usage: parseUsage(data.usage) };
+        return { status: data.status, logId: data.log_id, guardSkipped, usage: parseUsage(data.usage), rawExchange };
     }
 }

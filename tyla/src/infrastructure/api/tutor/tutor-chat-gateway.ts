@@ -20,10 +20,18 @@ interface TutorChatResponse {
 
 // ── Domain result ─────────────────────────────────────────────────────────────
 
+/** Raw HTTP request/response bodies captured for session audit log. */
+export interface TutorRawExchange {
+    requestBody: unknown;
+    requestAt: string;
+    responseBody: unknown;
+    responseAt: string;
+}
+
 export type TutorChatResult =
-    | { status: 'done' | 'unavailable'; logId: number; content: string; actions: TutorAction[]; usage: Usage; guardSkipped: boolean; warnings: string[] }
-    | { status: 'forbidden';            logId: number; content: string; usage: Usage }
-    | { status: 'error';                logId: number; content: string; usage: Usage };
+    | { status: 'done' | 'unavailable'; logId: number; content: string; actions: TutorAction[]; usage: Usage; guardSkipped: boolean; warnings: string[]; rawExchange?: TutorRawExchange }
+    | { status: 'forbidden';            logId: number; content: string; usage: Usage; rawExchange?: TutorRawExchange }
+    | { status: 'error';                logId: number; content: string; usage: Usage; rawExchange?: TutorRawExchange };
 
 // ── Gateway ───────────────────────────────────────────────────────────────────
 
@@ -63,6 +71,7 @@ export class TutorChatGateway {
             ...(fileContext ? { file_context: fileContext } : {}),
             ...(workspaceOverview ? { workspace_overview: workspaceOverview } : {}),
         };
+        const requestAt = new Date().toISOString();
         debugLog('tutor', 'REQUEST', body);
 
         const response = await axios.post<TutorChatResponse>(
@@ -76,7 +85,9 @@ export class TutorChatGateway {
         );
 
         const data = response.data;
+        const responseAt = new Date().toISOString();
         debugLog('tutor', 'RESPONSE', data);
+        const rawExchange: TutorRawExchange = { requestBody: body, requestAt, responseBody: data, responseAt };
 
         if (data.status === 'forbidden') {
             return {
@@ -84,6 +95,7 @@ export class TutorChatGateway {
                 logId:   data.log_id,
                 content: data.content,
                 usage:   parseUsage(data.usage),
+                rawExchange,
             };
         }
 
@@ -93,6 +105,7 @@ export class TutorChatGateway {
                 logId:   data.log_id,
                 content: data.content,
                 usage:   parseUsage(data.usage),
+                rawExchange,
             };
         }
 
@@ -119,6 +132,7 @@ export class TutorChatGateway {
             guardSkipped,
             warnings,
             usage: parseUsage(data.usage),
+            rawExchange,
         };
     }
 }

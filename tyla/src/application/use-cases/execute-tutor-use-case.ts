@@ -9,7 +9,7 @@
  */
 
 import path from 'path';
-import { TurnUsage } from '../../domain/entities/conversation-turn';
+import { TurnUsage, ApiLogEntry } from '../../domain/entities/conversation-turn';
 import { ToolRegistry } from '../orchestration/tool-registry';
 import { SessionMessage } from '../../shared/types/messages';
 import { TutorChatGateway } from '../../infrastructure/api/tutor/tutor-chat-gateway';
@@ -20,7 +20,7 @@ import { FileContextBudget } from '../services/file-context-budget';
 import { IFileSystem } from '../../domain/types/file-system';
 import { LocalFileSystem } from '../../infrastructure/filesystem/local-file-system';
 import { TutorAction, EditPatch } from '../../shared/types/tutor-actions';
-import { ContinuationFileLoader } from '../services/continuation-file-loader';
+import { ContinuationFileLoader, LoadResolution } from '../services/continuation-file-loader';
 import { PathConfinement } from '../../domain/policies/path-confinement';
 import { extractPdfText } from '../../infrastructure/pdf/pdf-text-extractor';
 import { stripLineNumberPrefixes } from '../services/line-numbering';
@@ -52,6 +52,10 @@ const BACKEND_WARNING_MESSAGES: Record<string, string> = {
     // plan 2026-06-12 §2.2: the tutor tried to edit a file it had not loaded; the
     // backend rewrote the edit to load_file, so the real edit lands one turn later.
     edit_file_redirected: 'The tutor tried to edit a file it had not loaded yet, so it loaded the file first (this costs one extra turn)',
+    // plan 2026-06-13 §4.2: the backend's RedundantLoadGate dropped a load_file for
+    // an already-loaded path (structural termination; the frontend dedup independently
+    // prevents the same re-request from reaching the backend at all).
+    redundant_load_dropped: 'The tutor tried to reload a file that was already loaded; the duplicate request was dropped',
 };
 
 const MAX_CONTINUATIONS = 3;   // hard termination invariant (b3 §4.4, §8); lower to 2 after Phase 0
@@ -79,6 +83,7 @@ export interface ExecuteTutorDeps {
 export interface TutorResult {
     content: string;
     usage: TurnUsage;
+    apiLogs: ApiLogEntry[];
 }
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
@@ -198,9 +203,21 @@ export class ExecuteTutorUseCase {
         // Single budget instance for the whole turn: base reads and B3 continuation
         // loads draw from one shared pool (gap-list §C, b3 §2.3). The scan summary
         // travels in the separate `workspace_overview` channel (plan 2026-06-12 §4);
-        // `baseFileContext` carries only @-mentioned numbered contents.
+        // @-mentioned files are loaded here and seeded into the dedup set so a
+        // backend load_file for the same path is immediately a no-op.
         const budget = new FileContextBudget(PER_TURN_FILE_CONTEXT_TOKEN_CAP);
-        const { workspaceOverview, fileContext: baseFileContext } = await this.buildContext(instruction, budget);
+        const { workspaceOverview, mentionResolutions } = await this.buildContext(instruction, budget);
+
+        // Seed the dedup map + loadedBlocks with @-mention files BEFORE the loop
+        // (plan 2026-06-13 §5.1 C): when the backend returns `load_file hw2.R` for
+        // a file already in file_context, resolved.has() fires → madeProgress stays
+        // false → the continuation loop terminates without a redundant API call.
+        const resolved = new Map<string, 'loaded' | 'unavailable'>();
+        const loadedBlocks: string[] = [];
+        for (const r of mentionResolutions) {
+            resolved.set(r.key, r.ok ? 'loaded' : 'unavailable');
+            loadedBlocks.push(r.block);
+        }
 
         // ── 2. Guard pre-call ──────────────────────────────────────────────────
         this.deps.emit('phase_start', { phase: 'guard', description: 'Running safety check' });
@@ -212,34 +229,38 @@ export class ExecuteTutorUseCase {
         }
         this.deps.emit('phase_end', { phase: 'guard', success: true });
 
+        const apiLogs: ApiLogEntry[] = [];
+        if (guard.rawExchange) {
+            apiLogs.push(
+                { timestamp: guard.rawExchange.requestAt,  source: 'guard', direction: 'request',  payload: guard.rawExchange.requestBody  },
+                { timestamp: guard.rawExchange.responseAt, source: 'guard', direction: 'response', payload: guard.rawExchange.responseBody },
+            );
+        }
+
         if (guard.status === 'forbidden') {
             this.deps.emit('guard_blocked', { reason: 'content_policy', phase: 'guard' });
             this.deps.emit('text_output', { content: guard.refusal });
-            return { content: guard.refusal, usage: toTurnUsage(guard.usage) };
+            return { content: guard.refusal, usage: toTurnUsage(guard.usage), apiLogs };
         }
         if (guard.status === 'error') {
             // decision doc §3.1: no log_id produced → cannot proceed. Show + retry.
             this.deps.emit('error', { message: `Safety check failed: ${guard.message}. Please try again.`, phase: 'guard' });
-            return { content: '', usage: toTurnUsage(guard.usage) };
+            return { content: '', usage: toTurnUsage(guard.usage), apiLogs };
         }
         if (guard.guardSkipped) {
             this.deps.emit('status_update', { warning: 'guard skipped: llm unavailable' });
         }
 
         // ── 3. B3 continuation loop (G1+G4+G5+G6+G9) ─────────────────────────
-        const resolved = new Map<string, 'loaded' | 'unavailable'>();
-        const loadedBlocks: string[] = [];
         const emittedWarnings = new Set<string>();
         let usage = toTurnUsage(guard.usage);
 
         for (let i = 0; ; i++) {
-            // file_context carries ONLY loaded numbered contents (@-mentions +
-            // load_file resolutions). Each block already opens with its
-            // `### <path>` header — the wire format the backend's edit_file gate
-            // parses (plan 2026-06-12 §2.2/§4). Empty when nothing has been loaded.
-            const fileContext = loadedBlocks.length
-                ? [baseFileContext, `## Files Loaded On Request\n${loadedBlocks.join('\n')}`].filter(Boolean).join('\n\n')
-                : baseFileContext;
+            // file_context is a flat sequence of `### <path>` blocks (plan 2026-06-14 §C).
+            // No `## ` section headings — they become sibling nodes to the backend's
+            // `## Student Workspace (live)` heading, making that section appear empty
+            // and causing the model to re-issue load_file for already-loaded files.
+            const fileContext = loadedBlocks.join('');
 
             this.deps.emit('phase_start', { phase: 'tutor', description: i === 0 ? 'Calling tutor API' : `Continuation ${i}` });
             let result;
@@ -254,16 +275,23 @@ export class ExecuteTutorUseCase {
             }
             usage = addUsage(usage, toTurnUsage(result.usage));
 
+            if (result.rawExchange) {
+                apiLogs.push(
+                    { timestamp: result.rawExchange.requestAt,  source: 'tutor', direction: 'request',  payload: result.rawExchange.requestBody  },
+                    { timestamp: result.rawExchange.responseAt, source: 'tutor', direction: 'response', payload: result.rawExchange.responseBody },
+                );
+            }
+
             if (result.status === 'forbidden') {
                 this.deps.emit('guard_blocked', { reason: 'guard_credential', phase: 'tutor' });
                 this.deps.emit('text_output', { content: result.content });
                 this.deps.emit('phase_end', { phase: 'tutor', success: true });
-                return { content: result.content, usage };
+                return { content: result.content, usage, apiLogs };
             }
             if (result.status === 'error') {
                 this.deps.emit('phase_end', { phase: 'tutor', success: false });
                 this.deps.emit('error', { message: `Tutor call failed: ${result.content || 'unknown error'}. Please try again.`, phase: 'tutor' });
-                return { content: result.content, usage };
+                return { content: result.content, usage, apiLogs };
             }
             if (result.guardSkipped) {
                 this.deps.emit('status_update', { warning: 'tutor: guard credential accepted under fail-open' });
@@ -274,6 +302,9 @@ export class ExecuteTutorUseCase {
                 emittedWarnings.add(code);
                 this.deps.emit('status_update', { warning: BACKEND_WARNING_MESSAGES[code] ?? `backend warning: ${code}` });
             }
+
+            // Debug: log raw actions before any gate filtering so mismatches are visible.
+            this.deps.emit('debug_raw_actions', { iteration: i, actions: result.actions });
 
             // Collect and resolve new load_file actions (G4+G7)
             const loads = result.actions.filter(
@@ -305,7 +336,7 @@ export class ExecuteTutorUseCase {
             this.deps.emit('text_output', { content: result.content });
             this.deps.emit('phase_end', { phase: 'tutor', success: true });
             await this.dispatchActions(result.actions.filter(a => a.type !== 'load_file'));
-            return { content: result.content, usage };
+            return { content: result.content, usage, apiLogs };
         }
     }
 
@@ -392,13 +423,13 @@ export class ExecuteTutorUseCase {
     private async buildContext(
         instruction: string,
         budget: FileContextBudget,
-    ): Promise<{ workspaceOverview: string; fileContext: string }> {
+    ): Promise<{ workspaceOverview: string; mentionResolutions: LoadResolution[] }> {
         this.deps.emit('phase_start', { phase: 'scan', description: 'Building file context' });
         // file_scan stays unconditional but name-only (decision 1): the cheap
         // scan summary is what lets the B3 load_file loop know which workspace
         // files it can request. Content reads are @-gated below.
         const { projectContext, scannedFiles } = await this.buildProjectContext();
-        const fileContents = await this.readMentionedFiles(instruction, scannedFiles, budget);
+        const mentionResolutions = await this.readMentionedFiles(instruction, scannedFiles, budget);
         this.deps.emit('phase_end', { phase: 'scan', success: true });
 
         return {
@@ -406,10 +437,9 @@ export class ExecuteTutorUseCase {
             // backend renders it under `## Student Workspace (overview)` + the
             // load-file guide and never appends a line-number guide for it.
             workspaceOverview: projectContext,
-            // Numbered contents of @-mentioned files only → `file_context`
-            // (`## Student Workspace (live)`). Empty when the student named no file;
-            // the overview alone is then sent so the model knows to `load_file` first.
-            fileContext: fileContents ? `## File Contents\n${fileContents}` : '',
+            // Numbered contents of @-mentioned files, as LoadResolution objects so
+            // callGateway can seed the dedup map before the continuation loop starts.
+            mentionResolutions,
         };
     }
 
@@ -420,14 +450,17 @@ export class ExecuteTutorUseCase {
      * is handed to the loader as a relative path (confinement blocks escapes),
      * so a miss yields an unavailable marker + warning — visible to both the
      * LLM and the student, never a silent drop.
+     *
+     * Returns LoadResolution[] so callGateway can seed the dedup map before the
+     * continuation loop (plan 2026-06-13 §5.1 C).
      */
     private async readMentionedFiles(
         instruction: string,
         scannedFiles: ScannedFile[],
         budget: FileContextBudget,
-    ): Promise<string> {
+    ): Promise<LoadResolution[]> {
         const tokens = [...instruction.matchAll(FILE_MENTION_RE)].map(m => m[1]);
-        if (tokens.length === 0) return '';
+        if (tokens.length === 0) return [];
 
         const seen = new Set<string>();
         const targets: Array<{ name: string; path: string }> = [];
@@ -480,16 +513,28 @@ export class ExecuteTutorUseCase {
     }
 
     /**
-     * Read a fixed set of files through ContinuationFileLoader.resolve(), concatenating
-     * their contents under the shared per-turn token budget; once the pool is spent the
-     * remaining files are refused with a visible marker rather than silently dropped.
-     * PDF, binary, and symlink-escape checks are all handled inside the loader.
+     * Read a fixed set of files through ContinuationFileLoader.resolve(), collecting
+     * LoadResolution objects under the shared per-turn token budget; once the pool is
+     * spent the remaining files are refused with a visible marker rather than silently
+     * dropped. PDF, binary, and symlink-escape checks are all handled inside the loader.
+     *
+     * Returns LoadResolution[] (not a concatenated string) so callers can seed the
+     * dedup map keyed by canonical path (plan 2026-06-13 §5.1 C).
      */
-    private async readFiles(targets: Array<{ name: string; path: string }>, budget: FileContextBudget): Promise<string> {
-        let out = '';
+    private async readFiles(
+        targets: Array<{ name: string; path: string }>,
+        budget: FileContextBudget,
+    ): Promise<LoadResolution[]> {
+        const results: LoadResolution[] = [];
         for (const file of targets) {
             if (budget.isExhausted()) {
-                out += budget.skipMarker(file.name);
+                // Early exit: skip PathConfinement + FS read when nothing fits anyway.
+                // Use the best-effort abs path as dedup key — matches the canonical path
+                // the loader would produce for non-symlinked files.
+                const bestKey = path.isAbsolute(file.path)
+                    ? file.path
+                    : path.resolve(this.deps.directory, file.path);
+                results.push({ key: bestKey, ok: false, block: budget.skipMarker(file.name) });
                 this.deps.emit('status_update', { warning: `file_context token budget reached — skipped ${file.name}` });
                 continue;
             }
@@ -501,7 +546,7 @@ export class ExecuteTutorUseCase {
                     : path.resolve(this.deps.directory, file.path);
                 const relativePath = path.relative(this.deps.directory, absPath);
                 const resolution = await this.loader.resolve(this.deps.directory, relativePath, budget);
-                out += resolution.block;
+                results.push(resolution);
                 if (!resolution.ok) {
                     this.deps.emit('status_update', { warning: `Could not load ${file.name} for context` });
                 }
@@ -511,6 +556,6 @@ export class ExecuteTutorUseCase {
                 });
             }
         }
-        return out;
+        return results;
     }
 }
