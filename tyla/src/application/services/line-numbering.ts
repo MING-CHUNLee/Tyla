@@ -46,3 +46,18 @@ export function stripLineNumberPrefixes(text: string): string {
         .map(line => line.replace(PREFIX_RE, ''))
         .join('\n');
 }
+
+/**
+ * Reduce a tutor `file_context` to its headers-only block: keep the `### <path>`
+ * heading lines, drop every `N| ` content line and per-block marker (plan Option C
+ * §3.2). This is the materials the backend parses `seen_paths` from — the frontend
+ * only WRITES these `### path` headers (it is the file_context producer); the backend
+ * owns the parse. Returns '' for empty / header-less input.
+ */
+export function toHeadersOnlyBlock(fileContext: string): string {
+    if (!fileContext) return '';
+    return fileContext
+        .split('\n')
+        .filter(line => line.startsWith('### '))
+        .join('\n');
+}
