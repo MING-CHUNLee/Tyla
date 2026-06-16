@@ -188,3 +188,38 @@ describe('ConversationTurn.fromJSON() — migration', () => {
         expect(restored.outputs[0].type).toBe('analysis');
     });
 });
+
+// ── toHistoryMessages: empty-assistant guard (plan 2026-06-16 §3.1 方案 A) ──────
+// A pure-action turn (tutor returned only an edit_file, no prose) stores an empty
+// assistantMessage. Serialized verbatim it becomes { role: 'assistant', content: '' },
+// which most LLM providers reject → the NEXT request 400s. toHistoryMessages() must
+// substitute a placeholder so wire history never carries an empty assistant message.
+
+describe('ConversationTurn.toHistoryMessages() — empty-assistant guard', () => {
+    const PLACEHOLDER = '(no message — file edit applied)';
+
+    it('substitutes a placeholder when assistantMessage is empty', () => {
+        const turn = new ConversationTurn(1, 'just fix it', '', BASE_USAGE, new Date(TS));
+        const msgs = turn.toHistoryMessages();
+        expect(msgs[0]).toEqual({ role: 'user', content: 'just fix it' });
+        expect(msgs[1].role).toBe('assistant');
+        expect(msgs[1].content).toBe(PLACEHOLDER);
+        expect(msgs[1].content).not.toBe('');
+    });
+
+    it('passes a non-empty assistantMessage through verbatim (no regression)', () => {
+        const turn = new ConversationTurn(1, 'explain', 'here is a hint', BASE_USAGE, new Date(TS));
+        expect(turn.toHistoryMessages()[1].content).toBe('here is a hint');
+    });
+
+    it('treats a whitespace-only assistantMessage as empty (.trim() boundary)', () => {
+        const turn = new ConversationTurn(1, 'fix it', '   ', BASE_USAGE, new Date(TS));
+        expect(turn.toHistoryMessages()[1].content).toBe(PLACEHOLDER);
+    });
+
+    it('keeps the real empty string in the persisted JSON (only the wire history is patched)', () => {
+        const turn = new ConversationTurn(1, 'fix it', '', BASE_USAGE, new Date(TS));
+        expect(turn.toJSON().assistantMessage).toBe('');
+        expect(turn.toHistoryMessages()[1].content).toBe(PLACEHOLDER);
+    });
+});

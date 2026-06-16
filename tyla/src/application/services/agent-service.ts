@@ -69,7 +69,6 @@ export type AgentEvent =
     | { type: 'tool_result_r_install'; data: { data: unknown } }
     | { type: 'continuation';       data: { iteration: number; loaded: string[]; intermediateContent: string } }
     | { type: 'guard_blocked';      data: { reason: string; phase: string } }
-    | { type: 'debug_raw_actions';  data: { iteration: number; actions: unknown[] } }
     | { type: 'install_proposed'; data: {
         toInstall: string[];
         alreadyInstalled: string[];

@@ -9,6 +9,7 @@
  */
 
 import path from 'path';
+import { isAxiosError } from 'axios';
 import { TurnUsage, ApiLogEntry } from '../../domain/entities/conversation-turn';
 import { ToolRegistry } from '../orchestration/tool-registry';
 import { SessionMessage } from '../../shared/types/messages';
@@ -305,9 +306,6 @@ export class ExecuteTutorUseCase {
                 this.deps.emit('status_update', { warning: BACKEND_WARNING_MESSAGES[code] ?? `backend warning: ${code}` });
             }
 
-            // Debug: log raw actions before any gate filtering so mismatches are visible.
-            this.deps.emit('debug_raw_actions', { iteration: i, actions: result.actions });
-
             // Collect and resolve new load_file actions (G4+G7)
             const loads = result.actions.filter(
                 (a): a is Extract<TutorAction, { type: 'load_file' }> => a.type === 'load_file',
@@ -344,8 +342,25 @@ export class ExecuteTutorUseCase {
 
     private failTutor(phase: 'guard' | 'tutor', error: unknown): never {
         this.deps.emit('phase_end', { phase, success: false });
-        this.deps.emit('error', { message: error instanceof Error ? error.message : String(error), phase });
+        this.deps.emit('error', { message: this.describeError(error), phase });
         throw error;
+    }
+
+    /**
+     * The gateways already fold the backend's error body into the thrown Error's message
+     * (gateway §3.2), so for those the `instanceof Error` branch already carries detail.
+     * The isAxiosError branch is a defensive fallback for any AxiosError that reaches here
+     * un-wrapped — it surfaces the backend `response.data` instead of the generic axios
+     * "Request failed with status code 400" that hides why the request was rejected.
+     */
+    private describeError(error: unknown): string {
+        if (isAxiosError(error) && error.response) {
+            const detail = typeof error.response.data === 'string'
+                ? error.response.data
+                : JSON.stringify(error.response.data);
+            return `${error.response.status}: ${detail}`;
+        }
+        return error instanceof Error ? error.message : String(error);
     }
 
     // ── Action dispatch (approval gate) ───────────────────────────────────────

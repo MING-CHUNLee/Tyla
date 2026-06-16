@@ -8,16 +8,31 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import axios from 'axios';
 import { TutorChatGateway } from '../../../src/infrastructure/api/tutor/tutor-chat-gateway';
+import { debugLog } from '../../../src/infrastructure/api/shared/debug-log';
 
-vi.mock('axios', () => ({ default: { post: vi.fn() } }));
+// isAxiosError mirrors the real axios guard (checks the `isAxiosError` marker) so the
+// gateway's catch branch fires for our synthetic rejections.
+vi.mock('axios', () => ({
+    default: { post: vi.fn() },
+    isAxiosError: (e: unknown): boolean =>
+        !!e && typeof e === 'object' && (e as { isAxiosError?: boolean }).isAxiosError === true,
+}));
+vi.mock('../../../src/infrastructure/api/shared/debug-log', () => ({ debugLog: vi.fn() }));
 vi.mock('../../../src/infrastructure/config/profile', () => ({
     getProfile: vi.fn(() => ({ studentId: 's1', courseId: 'c1', projectId: 'p1' })),
 }));
 
 const mockPost = axios.post as unknown as ReturnType<typeof vi.fn>;
+const mockDebugLog = debugLog as unknown as ReturnType<typeof vi.fn>;
+
+/** AxiosError-shaped rejection carrying a backend HTTP response. */
+function axiosError(status: number, data: unknown) {
+    return { isAxiosError: true, message: `Request failed with status code ${status}`, response: { status, data } };
+}
 
 beforeEach(() => {
     mockPost.mockReset();
+    mockDebugLog.mockReset();
     process.env.LLM_PROVIDER = 'openai';
     process.env.OPENAI_API_KEY = 'sk-test';
 });
@@ -191,5 +206,43 @@ describe('TutorChatGateway.send', () => {
         expect(result.status).toBe('error');
         expect('actions' in result).toBe(false);
         if (result.status === 'error') expect(result.content).toBe('server boom');
+    });
+});
+
+// ── Backend error diagnostics (plan 2026-06-16 §3.2) ───────────────────────────
+// A non-whitelisted status makes axios throw before the success-path RESPONSE log;
+// the catch branch must record the backend body and rethrow with that detail.
+
+describe('TutorChatGateway.send — AxiosError diagnostics', () => {
+    it('logs the backend response body and throws a message carrying status + detail on 400', async () => {
+        mockPost.mockRejectedValue(axiosError(400, { detail: 'assistant content cannot be empty' }));
+        const gw = new TutorChatGateway();
+
+        await expect(gw.send('hello', [], 1)).rejects.toThrow(/tutor API 400/);
+
+        // RESPONSE was logged with the backend body even though axios threw early.
+        const responseCall = mockDebugLog.mock.calls.find(c => c[0] === 'tutor' && c[1] === 'RESPONSE');
+        expect(responseCall).toBeTruthy();
+        expect(responseCall![2]).toMatchObject({
+            httpStatus: 400,
+            body: { detail: 'assistant content cannot be empty' },
+        });
+    });
+
+    it('folds the backend detail into the thrown message (not the generic axios string)', async () => {
+        mockPost.mockRejectedValue(axiosError(422, { detail: 'history[1].content must not be blank' }));
+        const gw = new TutorChatGateway();
+
+        await expect(gw.send('hi', [], 1)).rejects.toThrow(/history\[1\]\.content must not be blank/);
+    });
+
+    it('rethrows a non-HTTP error (timeout / ECONNREFUSED) unchanged and logs no RESPONSE', async () => {
+        // AxiosError with no `response` — connection refused / timeout.
+        const conn = Object.assign(new Error('connect ECONNREFUSED'), { isAxiosError: true });
+        mockPost.mockRejectedValue(conn);
+        const gw = new TutorChatGateway();
+
+        await expect(gw.send('hi', [], 1)).rejects.toBe(conn);
+        expect(mockDebugLog.mock.calls.some(c => c[1] === 'RESPONSE')).toBe(false);
     });
 });

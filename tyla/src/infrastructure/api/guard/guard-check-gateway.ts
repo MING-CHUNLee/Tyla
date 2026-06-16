@@ -6,7 +6,7 @@
  * GuardCheckResult; the caller (ExecuteTutorUseCase) decides forbidden/error/done handling.
  */
 
-import axios from 'axios';
+import axios, { AxiosResponse, isAxiosError } from 'axios';
 import { TYLA_API } from '../../config/constants';
 import { buildTylaApiRequest } from '../shared/build-llm-headers';
 import { parseUsage, Usage } from '../shared/parse-usage';
@@ -64,17 +64,37 @@ export class GuardCheckGateway {
         const requestAt = new Date().toISOString();
         debugLog('guard', 'REQUEST', body);
 
-        const response = await axios.post<GuardCheckResponse>(
-            `${this.baseUrl}/api/v1/guard_checks`,
-            body,
-            {
-                timeout: this.timeout,
-                headers,
-                // WS-A: status lives in the body, HTTP is always 200 (only malformed
-                // request / missing key → 4xx). Keep 202 accepted for the pre-WS-A bridge.
-                validateStatus: (status) => status === 200 || status === 202,
-            },
-        );
+        let response: AxiosResponse<GuardCheckResponse>;
+        try {
+            response = await axios.post<GuardCheckResponse>(
+                `${this.baseUrl}/api/v1/guard_checks`,
+                body,
+                {
+                    timeout: this.timeout,
+                    headers,
+                    // WS-A: status lives in the body, HTTP is always 200 (only malformed
+                    // request / missing key → 4xx). Keep 202 accepted for the pre-WS-A bridge.
+                    validateStatus: (status) => status === 200 || status === 202,
+                },
+            );
+        } catch (error) {
+            // A non-whitelisted status (e.g. a 400 request-validation reject) makes axios
+            // throw HERE — before the RESPONSE log below — so without this catch the failure
+            // leaves a REQUEST with no matching RESPONSE in debug.log (plan 2026-06-16 §1.4).
+            // Capture the backend's real error body, then rethrow with that detail folded in;
+            // the bare AxiosError string hides which field the backend rejected.
+            if (isAxiosError(error) && error.response) {
+                debugLog('guard', 'RESPONSE', {
+                    httpStatus: error.response.status,
+                    body: error.response.data,
+                });
+                const detail = typeof error.response.data === 'string'
+                    ? error.response.data
+                    : JSON.stringify(error.response.data);
+                throw new Error(`guard API ${error.response.status}: ${detail}`);
+            }
+            throw error;   // connection refused / timeout / non-HTTP → propagate unchanged
+        }
 
         const data = response.data;
         const responseAt = new Date().toISOString();

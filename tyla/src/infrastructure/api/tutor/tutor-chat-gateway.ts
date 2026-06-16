@@ -1,4 +1,4 @@
-import axios from 'axios';
+import axios, { AxiosResponse, isAxiosError } from 'axios';
 import { TutorAction, isTutorAction } from '../../../shared/types/tutor-actions';
 import { SessionMessage } from '../../../shared/types/messages';
 import { SessionTurn } from '../../../shared/types/session-turn';
@@ -80,15 +80,36 @@ export class TutorChatGateway {
         const requestAt = new Date().toISOString();
         debugLog('tutor', 'REQUEST', body);
 
-        const response = await axios.post<TutorChatResponse>(
-            `${this.baseUrl}/api/v1/tutor_chats`,
-            body,
-            {
-                timeout: this.timeout,
-                headers,
-                validateStatus: (status) => status === 200 || status === 202,
-            },
-        );
+        let response: AxiosResponse<TutorChatResponse>;
+        try {
+            response = await axios.post<TutorChatResponse>(
+                `${this.baseUrl}/api/v1/tutor_chats`,
+                body,
+                {
+                    timeout: this.timeout,
+                    headers,
+                    validateStatus: (status) => status === 200 || status === 202,
+                },
+            );
+        } catch (error) {
+            // A non-whitelisted status (e.g. the backend's 400 request-validation reject)
+            // makes axios throw HERE — before the RESPONSE log below ever runs, which is
+            // why debug.log shows a REQUEST with no matching RESPONSE (plan 2026-06-16 §1.4).
+            // Capture the backend's real error body so the failure is diagnosable, then
+            // rethrow with that detail folded into the message — the bare AxiosError string
+            // ("Request failed with status code 400") hides which field the backend rejected.
+            if (isAxiosError(error) && error.response) {
+                debugLog('tutor', 'RESPONSE', {
+                    httpStatus: error.response.status,
+                    body: error.response.data,
+                });
+                const detail = typeof error.response.data === 'string'
+                    ? error.response.data
+                    : JSON.stringify(error.response.data);
+                throw new Error(`tutor API ${error.response.status}: ${detail}`);
+            }
+            throw error;   // connection refused / timeout / non-HTTP → propagate unchanged
+        }
 
         const data = response.data;
         const responseAt = new Date().toISOString();

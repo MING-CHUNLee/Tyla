@@ -67,7 +67,21 @@ export class ConversationTurn {
     toHistoryMessages(): Array<{ role: 'user' | 'assistant'; content: string }> {
         return [
             { role: 'user', content: this.userMessage },
-            { role: 'assistant', content: this.assistantMessage },
+            {
+                role: 'assistant',
+                // A "pure action" turn (e.g. the tutor only returned an edit_file with no
+                // prose) leaves assistantMessage empty. Most LLM providers reject an
+                // assistant message whose content is the empty string, so an empty turn
+                // serialized verbatim poisons the NEXT request's history → HTTP 400
+                // (plan 2026-06-16 §1). Substitute a placeholder that both passes schema
+                // validation and preserves the "previous turn applied an edit" context.
+                // history alternation stays strict user/assistant — nothing downstream
+                // that depends on the pairing breaks. The session JSON keeps the real
+                // empty string; only the wire history is patched.
+                content: this.assistantMessage.trim() === ''
+                    ? '(no message — file edit applied)'
+                    : this.assistantMessage,
+            },
         ];
     }
 

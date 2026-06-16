@@ -251,12 +251,6 @@ export function mapAgentEventToMessage(event: AgentEvent): MappedEvent {
         case 'error':
             return { message: makeMessage('error', `[${event.data.phase}] ${event.data.message}`) };
 
-        case 'debug_raw_actions': {
-            const actions = event.data.actions as Array<{ type: string; path?: string; code?: string }>;
-            const summary = actions.map(a => a.path ? `${a.type}(${a.path})` : a.type).join(', ') || '(none)';
-            return { message: makeMessage('status', `[debug] i=${event.data.iteration} raw actions: ${summary}`) };
-        }
-
         default:
             return {};
     }
