@@ -12,6 +12,7 @@ import path from 'path';
 import { TurnUsage, ApiLogEntry } from '../../domain/entities/conversation-turn';
 import { ToolRegistry } from '../orchestration/tool-registry';
 import { SessionMessage } from '../../shared/types/messages';
+import { SessionTurn } from '../../shared/types/session-turn';
 import { TutorChatGateway } from '../../infrastructure/api/tutor/tutor-chat-gateway';
 import { GuardCheckGateway } from '../../infrastructure/api/guard/guard-check-gateway';
 import { EditStagingService } from '../services/edit-staging-service';
@@ -191,14 +192,14 @@ export class ExecuteTutorUseCase {
         this.loader = new ContinuationFileLoader(this.fileSystem, new PathConfinement(this.fileSystem), extractPdfText);
     }
 
-    async execute(instruction: string, history: SessionMessage[]): Promise<TutorResult> {
+    async execute(instruction: string, history: SessionMessage[], sessionTurns?: SessionTurn[]): Promise<TutorResult> {
         // Backend owns guard + prompt composition + LLM call. callGateway() guards against missing gateways.
-        return this.callGateway(instruction, history);
+        return this.callGateway(instruction, history, sessionTurns);
     }
 
     // ── Option B orchestration ────────────────────────────────────────────────
 
-    private async callGateway(instruction: string, history: SessionMessage[]): Promise<TutorResult> {
+    private async callGateway(instruction: string, history: SessionMessage[], sessionTurns?: SessionTurn[]): Promise<TutorResult> {
         // ── 1. workspace_overview + file_context (reuses scan + read helpers) ──
         // Single budget instance for the whole turn: base reads and B3 continuation
         // loads draw from one shared pool (gap-list §C, b3 §2.3). The scan summary
@@ -269,6 +270,7 @@ export class ExecuteTutorUseCase {
                     instruction, history, guard.logId,
                     fileContext || undefined,
                     workspaceOverview || undefined,
+                    sessionTurns,
                 );
             } catch (error) {
                 return this.failTutor('tutor', error);

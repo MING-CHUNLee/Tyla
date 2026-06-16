@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { TutorAction, isTutorAction } from '../../../shared/types/tutor-actions';
 import { SessionMessage } from '../../../shared/types/messages';
+import { SessionTurn } from '../../../shared/types/session-turn';
 import { TYLA_API } from '../../config/constants';
 import { buildTylaApiRequest } from '../shared/build-llm-headers';
 import { parseUsage, Usage } from '../shared/parse-usage';
@@ -53,6 +54,7 @@ export class TutorChatGateway {
         guardLogId: number,
         fileContext?: string,
         workspaceOverview?: string,
+        sessionTurns?: SessionTurn[],
     ): Promise<TutorChatResult> {
         const { profile, headers } = buildTylaApiRequest('tutor-api', this.directory);
 
@@ -68,6 +70,10 @@ export class TutorChatGateway {
             guard_log_id: guardLogId,
             prompt,
             history,
+            // Option C (plan 2026-06-15 §2.2/§2.4): rich, uncompressed turns. When present
+            // the backend ignores `history` and runs its own HistoryTurnSerializer + rolling
+            // summary; we still send `history` for backward compat during the switchover (§7).
+            ...(sessionTurns && sessionTurns.length > 0 ? { session_turns: sessionTurns } : {}),
             ...(fileContext ? { file_context: fileContext } : {}),
             ...(workspaceOverview ? { workspace_overview: workspaceOverview } : {}),
         };

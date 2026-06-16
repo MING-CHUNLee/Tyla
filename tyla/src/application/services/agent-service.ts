@@ -26,6 +26,7 @@ import { EventBus } from '../services/event-bus';
 
 import { FileChange } from '../../domain/entities/file-change';
 import { SessionMessage } from '../../shared/types/messages';
+import { buildSessionTurns } from '../services/session-turn-builder';
 
 import { ExecuteAskUseCase } from '../use-cases/execute-ask-use-case';
 import { ExecuteInstructionUseCase } from '../use-cases/execute-instruction-use-case';
@@ -264,8 +265,6 @@ export class AgentService {
 
     /** Execute one instruction through the full agent pipeline */
     async executeInstruction(instruction: string): Promise<void> {
-        const history = await this.prepareHistory();
-
         // Non-default modes bypass intent classification and go directly to the tutor pipeline,
         // which reads the corresponding policy md file for the active mode.
         const mode = this.modeManager.getMode();
@@ -274,12 +273,19 @@ export class AgentService {
                 this.emit({ type: 'error', data: { message: 'Tutor backend not configured — set a valid profile.json and restart tyla.', phase: 'guard' } });
                 return;
             }
+            // Option C (plan 2026-06-15 §5.3/§7): the backend owns history compression AND the
+            // rolling summary, so the frontend forwards rich, uncompressed `session_turns` and
+            // does NOT run its own HistorySummarizer here (that would double-compress and cost an
+            // extra LLM call the backend ignores). Raw history rides along for backward compat
+            // during the switchover — the backend prefers session_turns when present (§2.4).
+            const history = this.rawHistory();
+            const sessionTurns = buildSessionTurns(this.session);
             // Tutor use case emits its own error events (with phase) via failTutor() and re-throws
             // to exit early. Use a dedicated path here so the re-throw is swallowed without a
             // second errorless emission from executeWithMode.
             let result;
             try {
-                result = await this.tutorUseCase.execute(instruction, history);
+                result = await this.tutorUseCase.execute(instruction, history, sessionTurns);
             } catch {
                 return; // error already emitted by tutorUseCase
             }
@@ -289,6 +295,7 @@ export class AgentService {
             return;
         }
 
+        const history = await this.prepareHistory();
         const intent = await this.classifyIntent(instruction, history);
 
         if (intent === 'ask') {
@@ -378,7 +385,16 @@ export class AgentService {
     private async prepareHistory(): Promise<SessionMessage[]> {
         return this.summarizer.shouldSummarize(this.session)
             ? await this.summarizer.summarize(this.session)
-            : this.session.getHistory().map(msg => ({ role: msg.role as 'user' | 'assistant', content: msg.content }));
+            : this.rawHistory();
+    }
+
+    /**
+     * Raw, un-summarized flattened history. The tutor path uses this directly:
+     * under Option C the backend owns compression + rolling summary (§5.3), so the
+     * frontend summarizer is bypassed there (see executeInstruction).
+     */
+    private rawHistory(): SessionMessage[] {
+        return this.session.getHistory().map(msg => ({ role: msg.role as 'user' | 'assistant', content: msg.content }));
     }
 
     private async classifyIntent(instruction: string, history: SessionMessage[]): Promise<Intent> {
