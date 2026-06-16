@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { addLineNumbers, stripLineNumberPrefixes } from '../../../src/application/services/line-numbering';
+import { addLineNumbers, stripLineNumberPrefixes, toHeadersOnlyBlock } from '../../../src/application/services/line-numbering';
 
 describe('addLineNumbers', () => {
     it('prefixes each line with its 1-based number', () => {
@@ -55,5 +55,24 @@ describe('stripLineNumberPrefixes', () => {
 
     it('does not touch R pipe operators mid-line', () => {
         expect(stripLineNumberPrefixes('1| d |> filter(x > 2)')).toBe('d |> filter(x > 2)');
+    });
+});
+
+describe('toHeadersOnlyBlock', () => {
+    it('keeps `### path` headings and drops every numbered content line', () => {
+        const fileContext =
+            '### hw2.R\n1| library(ggplot2)\n2| d <- rnorm(100)\n\n### utils.R\n1| f <- function() {}\n\n';
+        expect(toHeadersOnlyBlock(fileContext)).toBe('### hw2.R\n### utils.R');
+    });
+
+    it('drops per-block markers (skip / do-not-request), keeping only the heading', () => {
+        const fileContext =
+            '### missing.R\n[skipped: file-context token budget exhausted]\n\n';
+        expect(toHeadersOnlyBlock(fileContext)).toBe('### missing.R');
+    });
+
+    it('returns empty for empty or header-less input', () => {
+        expect(toHeadersOnlyBlock('')).toBe('');
+        expect(toHeadersOnlyBlock('1| just content\nno headings')).toBe('');
     });
 });

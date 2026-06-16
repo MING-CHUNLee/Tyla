@@ -289,6 +289,57 @@ describe('AgentService', () => {
         });
     });
 
+    describe('executeInstruction() — tutor session_turns switchover (Option C §5.3/§7)', () => {
+        function makeTutorService() {
+            const events: AgentEvent[] = [];
+            const eventBus = new EventBus();
+            const repo = makeMockRepo();
+            const mockTutorUseCase = {
+                execute: vi.fn().mockResolvedValue({ content: 'tutor response', usage: ZERO_USAGE, apiLogs: [] }),
+            };
+            const summarizer = {
+                shouldSummarize: vi.fn().mockReturnValue(true), // even if it WOULD fire, tutor path must skip it
+                summarize: vi.fn().mockResolvedValue([]),
+            };
+            const deps: AgentServiceDeps = {
+                askUseCase:         { execute: vi.fn() } as never,
+                instructionUseCase: { execute: vi.fn() } as never,
+                runUseCase:         { execute: vi.fn() } as never,
+                tutorUseCase:       mockTutorUseCase as never,
+                installUseCase:     { execute: vi.fn() } as never,
+                intentRouter:       { classify: vi.fn() } as never,
+                summarizer:         summarizer as never,
+                pluginLoader:  { loadAll: async () => [] },
+                modeManager:   new ModeManager('tutor-guide'),
+                repo,
+                initialModel:  'claude-test',
+                eventBus,
+            };
+            const service = new AgentService({ directory: '/fake/project' }, (e) => events.push(e), deps);
+            return { service, mockTutorUseCase, summarizer };
+        }
+
+        it('forwards session_turns built from prior turns and bypasses the frontend summarizer', async () => {
+            const { service, mockTutorUseCase, summarizer } = makeTutorService();
+            await service.initialize();
+            // Seed a prior turn so session_turns is non-empty.
+            service.getSession().addTurn('earlier question', 'earlier hint', ZERO_USAGE);
+
+            await service.executeInstruction('next question');
+
+            expect(mockTutorUseCase.execute).toHaveBeenCalledTimes(1);
+            const [instruction, history, sessionTurns] = mockTutorUseCase.execute.mock.calls[0];
+            expect(instruction).toBe('next question');
+            expect(history).toEqual([
+                { role: 'user', content: 'earlier question' },
+                { role: 'assistant', content: 'earlier hint' },
+            ]);
+            expect(sessionTurns).toEqual([{ prompt: 'earlier question', prose: 'earlier hint' }]);
+            // §5.3: the backend owns the rolling summary now — the frontend must not summarize.
+            expect(summarizer.summarize).not.toHaveBeenCalled();
+        });
+    });
+
     describe('handleSlashCommand()', () => {
         it('/status returns session info string', async () => {
             const { service } = makeService();

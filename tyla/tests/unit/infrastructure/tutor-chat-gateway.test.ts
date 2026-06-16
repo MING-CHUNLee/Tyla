@@ -76,6 +76,32 @@ describe('TutorChatGateway.send', () => {
         expect('workspace_overview' in body).toBe(false);
     });
 
+    it('includes session_turns in the request body when provided (Option C §2.2)', async () => {
+        mockPost.mockResolvedValue({
+            data: { log_id: 1, status: 'done', content: 'ok', actions: [], usage: null },
+        });
+        const gw = new TutorChatGateway();
+        const sessionTurns = [{ prompt: 'why?', prose: 'because', context_headers: '### a.R' }];
+
+        await gw.send('hello', [], 5, undefined, undefined, sessionTurns);
+
+        const body = mockPost.mock.calls[0][1];
+        expect(body.session_turns).toEqual(sessionTurns);
+    });
+
+    it('omits session_turns when none / empty is provided (first turn)', async () => {
+        mockPost.mockResolvedValue({
+            data: { log_id: 1, status: 'done', content: 'ok', actions: [], usage: null },
+        });
+        const gw = new TutorChatGateway();
+
+        await gw.send('hello', [], 5);
+        await gw.send('hello', [], 5, undefined, undefined, []);
+
+        expect('session_turns' in mockPost.mock.calls[0][1]).toBe(false);
+        expect('session_turns' in mockPost.mock.calls[1][1]).toBe(false);
+    });
+
     it('filters actions through isTutorAction (one valid + one malformed → length 1)', async () => {
         mockPost.mockResolvedValue({
             data: {

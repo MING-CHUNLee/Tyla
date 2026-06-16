@@ -130,6 +130,17 @@ describe('ExecuteTutorUseCase — Option B', () => {
         expect(events.some(e => e.type === 'text_output' && e.data.content === 'Here is a hint')).toBe(true);
     });
 
+    it('forwards session_turns to the gateway as the 6th send arg (Option C §7)', async () => {
+        const { deps } = makeOptionB();
+        const useCase = new ExecuteTutorUseCase(deps);
+        const sessionTurns = [{ prompt: 'earlier question', prose: 'earlier hint' }];
+
+        await useCase.execute('next question', [], sessionTurns);
+
+        const sendMock = deps.tutorChatGateway!.send as ReturnType<typeof vi.fn>;
+        expect(sendMock.mock.calls[0][5]).toEqual(sessionTurns);
+    });
+
     it('edit_file action applies only when approved', async () => {
         const fileSystem = makeFs();
         const { deps, events } = makeOptionB({
