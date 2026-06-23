@@ -32,7 +32,11 @@ export interface TutorRawExchange {
 export type TutorChatResult =
     | { status: 'done' | 'unavailable'; logId: number; content: string; actions: TutorAction[]; usage: Usage; guardSkipped: boolean; warnings: string[]; rawExchange?: TutorRawExchange }
     | { status: 'forbidden';            logId: number; content: string; usage: Usage; rawExchange?: TutorRawExchange }
-    | { status: 'error';                logId: number; content: string; usage: Usage; rawExchange?: TutorRawExchange };
+    | { status: 'error';                logId: number; content: string; usage: Usage; rawExchange?: TutorRawExchange }
+    // 429 from the provider (plan 2026-06-18 §6, C). No logId (the 429 body need not
+    // carry one) and no rawExchange (this is the error path — the catch block already
+    // wrote the RESPONSE debug log). The use case turns this into a back-off prompt.
+    | { status: 'rate_limited';         retryAfterSeconds: number | null; limitDimension: 'requests' | 'tokens' | 'unknown' };
 
 // ── Gateway ───────────────────────────────────────────────────────────────────
 
@@ -57,6 +61,7 @@ export class TutorChatGateway {
         sessionTurns?: SessionTurn[],
     ): Promise<TutorChatResult> {
         const { profile, headers } = buildTylaApiRequest('tutor-api', this.directory);
+        
 
         // Two explicit channels (plan 2026-06-12): `workspace_overview` is the cheap
         // file-listing manifest (no contents/line numbers); `file_context` is the
@@ -103,6 +108,22 @@ export class TutorChatGateway {
                     httpStatus: error.response.status,
                     body: error.response.data,
                 });
+
+                // 429: return a structured result so the use case can render the
+                // correct back-off guidance (plan 2026-06-18 §6, C — "wait & retry",
+                // never "open a new conversation"). Distinct from the generic throw below.
+                if (error.response.status === 429) {
+                    const body = error.response.data as {
+                        errors?: { retry_after?: string | number; limit_dimension?: string };
+                    };
+                    const ra = body?.errors?.retry_after;
+                    const retryAfterSeconds = ra != null ? Number(ra) : null;
+                    const dim = body?.errors?.limit_dimension;
+                    const limitDimension: 'requests' | 'tokens' | 'unknown' =
+                        dim === 'requests' || dim === 'tokens' ? dim : 'unknown';
+                    return { status: 'rate_limited' as const, retryAfterSeconds, limitDimension };
+                }
+
                 const detail = typeof error.response.data === 'string'
                     ? error.response.data
                     : JSON.stringify(error.response.data);

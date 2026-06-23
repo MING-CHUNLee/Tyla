@@ -58,6 +58,15 @@ const BACKEND_WARNING_MESSAGES: Record<string, string> = {
     // an already-loaded path (structural termination; the frontend dedup independently
     // prevents the same re-request from reaching the backend at all).
     redundant_load_dropped: 'The tutor tried to reload a file that was already loaded; the duplicate request was dropped',
+    // plan 2026-06-16-session-token-limit-signal (A) — per-request context limit.
+    // Action: start a new conversation (context is cleared). MUST stay distinct from
+    // provider_rate_limited below — the user actions are opposite (plan 2026-06-18 §6).
+    session_limit_reached:
+        'This conversation is too long for the current request. Start a new conversation to continue.',
+    // plan 2026-06-18-provider-rate-limit-passthrough (C2) — account-level rate window.
+    // Action: wait for the window to reset; opening a new conversation does NOT help.
+    provider_rate_limited:
+        'Your API key quota is running low for this period. Please wait before sending more messages.',
 };
 
 const MAX_CONTINUATIONS = 3;   // hard termination invariant (b3 §4.4, §8); lower to 2 after Phase 0
@@ -276,6 +285,26 @@ export class ExecuteTutorUseCase {
             } catch (error) {
                 return this.failTutor('tutor', error);
             }
+
+            // Hard 429 (plan 2026-06-18 §6, C): back off & retry — never "open a new
+            // conversation" (that is the OPPOSITE action, reserved for session_limit_reached).
+            // Handled here, before usage/rawExchange are read, because the rate_limited
+            // variant carries neither field; narrowing it out keeps the accesses below valid.
+            // Uses the existing `error` event (no new event type) and does NOT retry.
+            if (result.status === 'rate_limited') {
+                const waitMsg = result.retryAfterSeconds != null
+                    ? `Please wait about ${result.retryAfterSeconds} seconds before retrying.`
+                    : 'Please wait a moment before retrying.';
+                const scopeMsg = result.limitDimension === 'requests'
+                    ? 'Your API key has hit its per-minute request limit.'
+                    : result.limitDimension === 'tokens'
+                        ? 'Your API key has hit its per-minute token limit.'
+                        : 'Your API key has been rate limited by the LLM provider.';
+                this.deps.emit('phase_end', { phase: 'tutor', success: false });
+                this.deps.emit('error', { message: `${scopeMsg} ${waitMsg}`, phase: 'tutor' });
+                return { content: '', usage, apiLogs };
+            }
+
             usage = addUsage(usage, toTurnUsage(result.usage));
 
             if (result.rawExchange) {

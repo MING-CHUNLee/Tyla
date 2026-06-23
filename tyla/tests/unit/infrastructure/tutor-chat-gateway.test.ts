@@ -246,3 +246,45 @@ describe('TutorChatGateway.send — AxiosError diagnostics', () => {
         expect(mockDebugLog.mock.calls.some(c => c[1] === 'RESPONSE')).toBe(false);
     });
 });
+
+// ── 429 provider rate limit (plan 2026-06-18 §6, C) ────────────────────────────
+// A 429 is not whitelisted, so axios throws into the catch branch; the gateway must
+// turn it into a structured `rate_limited` result (not a generic thrown Error) so the
+// use case can render the "wait & retry" back-off guidance.
+
+describe('TutorChatGateway.send — 429 rate limit', () => {
+    it('returns rate_limited result when backend returns 429', async () => {
+        mockPost.mockRejectedValue(axiosError(429, {
+            status: 'rate_limited',
+            errors: { retry_after: '30', limit_dimension: 'requests' },
+        }));
+        const gw = new TutorChatGateway();
+        const result = await gw.send('hi', [], 1);
+        expect(result.status).toBe('rate_limited');
+        expect((result as { retryAfterSeconds: number }).retryAfterSeconds).toBe(30);
+        expect((result as { limitDimension: string }).limitDimension).toBe('requests');
+    });
+
+    it('handles 429 with no retry_after', async () => {
+        mockPost.mockRejectedValue(axiosError(429, { status: 'rate_limited', errors: {} }));
+        const gw = new TutorChatGateway();
+        const result = await gw.send('hi', [], 1);
+        expect(result.status).toBe('rate_limited');
+        expect((result as { retryAfterSeconds: number | null }).retryAfterSeconds).toBeNull();
+        expect((result as { limitDimension: string }).limitDimension).toBe('unknown');
+    });
+
+    it('still throws for non-429 errors (e.g. 502)', async () => {
+        mockPost.mockRejectedValue(axiosError(502, 'bad gateway'));
+        const gw = new TutorChatGateway();
+        await expect(gw.send('hi', [], 1)).rejects.toThrow('tutor API 502');
+    });
+
+    it('rate_limited result does not include log_id or content', async () => {
+        mockPost.mockRejectedValue(axiosError(429, { errors: { retry_after: '10' } }));
+        const gw = new TutorChatGateway();
+        const result = await gw.send('hi', [], 1);
+        expect(result).not.toHaveProperty('logId');
+        expect(result).not.toHaveProperty('content');
+    });
+});

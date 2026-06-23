@@ -204,6 +204,74 @@ describe('ExecuteTutorUseCase — Option B', () => {
         expect(warnings.some(w => w.includes('tried to reload a file'))).toBe(true);
     });
 
+    // ── rate limit: hard 429 vs soft warnings (plan 2026-06-18 §6, C) ─────────
+    // §6 鐵則: provider_rate_limited / 429 → "wait & retry"; session_limit_reached →
+    // "open a new conversation". Opposite actions — must never share copy or exit path.
+
+    it('emits error with retry_after when tutor returns rate_limited', async () => {
+        const { deps, events } = makeOptionB({
+            tutor: { status: 'rate_limited', retryAfterSeconds: 45, limitDimension: 'requests' },
+        });
+        await new ExecuteTutorUseCase(deps).execute('hi', []);
+        const err = events.find(e => e.type === 'error');
+        expect(err).toBeDefined();
+        expect(err!.data.message).toContain('45 seconds');
+        expect(err!.data.message).toContain('request limit');
+    });
+
+    it('emits error with generic message when limitDimension is unknown', async () => {
+        const { deps, events } = makeOptionB({
+            tutor: { status: 'rate_limited', retryAfterSeconds: null, limitDimension: 'unknown' },
+        });
+        await new ExecuteTutorUseCase(deps).execute('hi', []);
+        const err = events.find(e => e.type === 'error');
+        expect(err!.data.message).toContain('rate limited');
+        expect(err!.data.message).toContain('wait a moment');
+    });
+
+    it('shows provider_rate_limited warning without suggesting new conversation', async () => {
+        const { deps, events } = makeOptionB({
+            tutor: {
+                status: 'done', logId: 7, content: 'ok', actions: [],
+                guardSkipped: false, usage: { inputTokens: 1, outputTokens: 1 },
+                warnings: ['provider_rate_limited'],
+            },
+        });
+        await new ExecuteTutorUseCase(deps).execute('hi', []);
+        const w = events.find(e => e.type === 'status_update' && String(e.data.warning).includes('quota'));
+        expect(w).toBeDefined();
+        expect(String(w!.data.warning)).not.toContain('new conversation');
+    });
+
+    it('shows session_limit_reached warning suggesting new conversation', async () => {
+        const { deps, events } = makeOptionB({
+            tutor: {
+                status: 'done', logId: 7, content: 'ok', actions: [],
+                guardSkipped: false, usage: { inputTokens: 1, outputTokens: 1 },
+                warnings: ['session_limit_reached'],
+            },
+        });
+        await new ExecuteTutorUseCase(deps).execute('hi', []);
+        const w = events.find(e => e.type === 'status_update' && String(e.data.warning).includes('new conversation'));
+        expect(w).toBeDefined();
+    });
+
+    it('handles rate_limited warning and session_limit_reached simultaneously', async () => {
+        const { deps, events } = makeOptionB({
+            tutor: {
+                status: 'done', logId: 7, content: 'ok', actions: [],
+                guardSkipped: false, usage: { inputTokens: 1, outputTokens: 1 },
+                warnings: ['session_limit_reached', 'provider_rate_limited'],
+            },
+        });
+        await new ExecuteTutorUseCase(deps).execute('hi', []);
+        const warningMsgs = events
+            .filter(e => e.type === 'status_update' && e.data.warning)
+            .map(e => e.data.warning as string);
+        expect(warningMsgs.some(w => w.includes('new conversation'))).toBe(true);   // session
+        expect(warningMsgs.some(w => w.includes('quota'))).toBe(true);              // provider
+    });
+
     it('execute_script rejected emits script_rejected and never runs r_exec', async () => {
         const rExec = { execute: vi.fn() };
         const { deps, events, registryGet } = makeOptionB({
