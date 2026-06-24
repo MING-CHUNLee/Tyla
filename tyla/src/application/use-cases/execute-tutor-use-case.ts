@@ -305,6 +305,18 @@ export class ExecuteTutorUseCase {
                 return { content: '', usage, apiLogs };
             }
 
+            // Hard 413 (plan 2026-06-24 D): input exceeds the provider's per-request token
+            // cap. Guide the student to start a new conversation — DO NOT retry (same body
+            // always re-triggers 413). OPPOSITE action from 429 (back-off & retry).
+            if (result.status === 'input_too_large') {
+                const limitMsg = result.maxInputTokens != null
+                    ? `This input is too long for the provider (limit: ${result.maxInputTokens} tokens). Please start a new conversation.`
+                    : 'This input is too long for the provider. Please start a new conversation.';
+                this.deps.emit('phase_end', { phase: 'tutor', success: false });
+                this.deps.emit('error', { message: limitMsg, phase: 'tutor' });
+                return { content: '', usage, apiLogs };
+            }
+
             usage = addUsage(usage, toTurnUsage(result.usage));
 
             if (result.rawExchange) {

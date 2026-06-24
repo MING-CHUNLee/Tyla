@@ -36,7 +36,11 @@ export type TutorChatResult =
     // 429 from the provider (plan 2026-06-18 §6, C). No logId (the 429 body need not
     // carry one) and no rawExchange (this is the error path — the catch block already
     // wrote the RESPONSE debug log). The use case turns this into a back-off prompt.
-    | { status: 'rate_limited';         retryAfterSeconds: number | null; limitDimension: 'requests' | 'tokens' | 'unknown' };
+    | { status: 'rate_limited';         retryAfterSeconds: number | null; limitDimension: 'requests' | 'tokens' | 'unknown' }
+    // 413 from the backend (provider per-request token cap; plan 2026-06-24 D).
+    // Never retry — same body will always re-trigger 413.
+    // maxInputTokens is null when the backend omitted it (pre-flight context_overflow path).
+    | { status: 'input_too_large'; maxInputTokens: number | null };
 
 // ── Gateway ───────────────────────────────────────────────────────────────────
 
@@ -122,6 +126,16 @@ export class TutorChatGateway {
                     const limitDimension: 'requests' | 'tokens' | 'unknown' =
                         dim === 'requests' || dim === 'tokens' ? dim : 'unknown';
                     return { status: 'rate_limited' as const, retryAfterSeconds, limitDimension };
+                }
+
+                // 413: input too large (per-request token cap). Return structured result so
+                // the use case can show "start a new conversation" — never retry (plan D).
+                if (error.response.status === 413) {
+                    const body = error.response.data as {
+                        errors?: { max_input_tokens?: number };
+                    };
+                    const maxInputTokens = body?.errors?.max_input_tokens ?? null;
+                    return { status: 'input_too_large' as const, maxInputTokens };
                 }
 
                 const detail = typeof error.response.data === 'string'
