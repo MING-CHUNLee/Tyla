@@ -408,16 +408,24 @@ export class ExecuteTutorUseCase {
 
     private async dispatchActions(actions: TutorAction[]): Promise<void> {
         if (actions.length === 0) return;
-        this.deps.emit('phase_start', { phase: 'actions', description: `Dispatching ${actions.length} action(s)` });
 
         for (const action of actions) {
+            this.deps.emit('phase_start', { phase: 'actions', description: this.describeAction(action) });
             switch (action.type) {
                 case 'edit_file':      await this.dispatchEditFile(action); break;
                 case 'execute_script': await this.dispatchExecuteScript(action); break;
             }
+            this.deps.emit('phase_end', { phase: 'actions', success: true });
         }
+    }
 
-        this.deps.emit('phase_end', { phase: 'actions', success: true });
+    private describeAction(action: TutorAction): string {
+        switch (action.type) {
+            case 'edit_file':      return `edit_file: ${action.path}`;
+            case 'execute_script': return 'execute_script';
+            case 'load_file':      return `load_file: ${action.path}`;
+            default:               return 'action';
+        }
     }
 
     private async dispatchEditFile(action: { path: string; patches: EditPatch[] }): Promise<void> {

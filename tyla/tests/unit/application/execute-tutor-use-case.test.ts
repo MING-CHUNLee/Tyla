@@ -161,6 +161,24 @@ describe('ExecuteTutorUseCase — Option B', () => {
         expect(fileSystem.write).toHaveBeenCalled();
     });
 
+    it('dispatch emits a per-action phase_start labelled "<type>: <path>" (plan 2026-06-28)', async () => {
+        const { deps, events } = makeOptionB({
+            tutor: {
+                status: 'done', logId: 7, content: 'Try this',
+                actions: [{ type: 'edit_file', path: 'hw11.R', patches: [{ start_line: 1, search: 'old code', replace: 'new code' }] }],
+                guardSkipped: false, usage: { inputTokens: 3, outputTokens: 4 },
+            },
+            onApproval: vi.fn().mockResolvedValue(true),
+        });
+        const useCase = new ExecuteTutorUseCase(deps);
+
+        await useCase.execute('fix my code', []);
+
+        expect(events.some(e =>
+            e.type === 'phase_start' && e.data.phase === 'actions' && e.data.description === 'edit_file: hw11.R'
+        )).toBe(true);
+    });
+
     it('edit_file action is rejected when approval is declined', async () => {
         const fileSystem = makeFs();
         const { deps, events } = makeOptionB({
