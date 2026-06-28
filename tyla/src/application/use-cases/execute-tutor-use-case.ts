@@ -356,8 +356,12 @@ export class ExecuteTutorUseCase {
                 for (const a of loads) {
                     const r = await this.loader.resolve(this.deps.directory, a.path, budget);
                     if (resolved.has(r.key)) continue;
+                    // Emit a visible phase so the user can see which file is being loaded
+                    // (mirrors the per-action phase in dispatchActions — plan 2026-06-28).
+                    this.deps.emit('phase_start', { phase: 'file_load', description: `load_file: ${a.path}` });
                     resolved.set(r.key, r.ok ? 'loaded' : 'unavailable');
                     loadedBlocks.push(r.block);
+                    this.deps.emit('phase_end', { phase: 'file_load', success: r.ok });
                     madeProgress = true;
                 }
             } else if (loads.length > 0) {

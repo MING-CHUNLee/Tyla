@@ -179,6 +179,44 @@ describe('ExecuteTutorUseCase — Option B', () => {
         )).toBe(true);
     });
 
+    it('continuation loop emits phase_start "load_file: <path>" for each newly loaded file (plan 2026-06-28)', async () => {
+        const events: Array<{ type: string; data: Record<string, unknown> }> = [];
+        const emit = (type: string, data: Record<string, unknown>) => { events.push({ type, data }); };
+
+        const registry = { get: vi.fn(() => undefined), register: vi.fn(), getSchemas: vi.fn().mockReturnValue([]) } as unknown as ToolRegistry;
+        const deps: ExecuteTutorDeps = {
+            registry,
+            directory: '/project',
+            emit,
+            guardCheckGateway: makeGuard(GUARD_DONE),
+            tutorChatGateway: {
+                send: vi.fn()
+                    .mockResolvedValueOnce({
+                        status: 'done', logId: 7, content: '',
+                        actions: [{ type: 'load_file', path: 'hw11.R' }],
+                        guardSkipped: false, usage: { inputTokens: 3, outputTokens: 4 },
+                    })
+                    .mockResolvedValueOnce({
+                        status: 'done', logId: 8, content: 'Fixed!',
+                        actions: [],
+                        guardSkipped: false, usage: { inputTokens: 5, outputTokens: 2 },
+                    }),
+            } as unknown as TutorChatGateway,
+            fileSystem: makeFs(),
+            diffEngine: makeDiff(),
+        };
+
+        const useCase = new ExecuteTutorUseCase(deps);
+        await useCase.execute('fix my code', []);
+
+        expect(events.some(e =>
+            e.type === 'phase_start' && e.data.phase === 'file_load' && e.data.description === 'load_file: hw11.R'
+        )).toBe(true);
+        expect(events.some(e =>
+            e.type === 'phase_end' && e.data.phase === 'file_load'
+        )).toBe(true);
+    });
+
     it('edit_file action is rejected when approval is declined', async () => {
         const fileSystem = makeFs();
         const { deps, events } = makeOptionB({
