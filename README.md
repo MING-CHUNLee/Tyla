@@ -14,7 +14,7 @@ tyla agent "Add error handling to the data loading pipeline"
 - **Interactive TUI** — full-screen Ink-based terminal UI; the default entry point when you run `tyla` with no arguments
 - **Agent mode** — give a natural language instruction; Tyla scans your files, reasons with ReAct loops, proposes edits, and applies them after you review the diff
 - **Ask mode** — conversational Q&A with streaming output; automatically reads relevant files to answer questions about your project
-- **Workflow modes** — switch between `default`, `solver`, `tutor-socratic`, and `tutor-guide` in the TUI via slash commands
+- **Workflow modes** — `default`, `solver`, `tutor-socratic`, and `tutor-guide`, selected via the `workflowMode` field in `.tyla/settings.json` (tutor-guide can also be launched with `tyla --tutor`)
 - **Guard agent** — probability-based LLM safety judge; screens user input in tutor modes before processing
 - **Session memory** — conversations persist across calls; resume previous sessions with `--resume`
 - **Rollback** — revert to any earlier session checkpoint via TUI slash command
@@ -64,8 +64,8 @@ OLLAMA_HOST=http://localhost:11434   # no key needed for local Ollama
 
 # Optional overrides
 LLM_PROVIDER=anthropic               # force a specific provider
-LLM_MODEL=claude-sonnet-4-20250514   # override default model
-LLM_MAX_TOKENS=4096
+LLM_MODEL=claude-3-5-sonnet-20241022 # override default model (this is the Anthropic default)
+LLM_MAX_TOKENS=8192
 ```
 
 Project data (sessions, knowledge base, settings) is stored in `.tyla/` inside your working directory. Plugin tools are global at `~/.tyla/plugins/`.
@@ -108,18 +108,17 @@ tyla --assignment ./assignments/HW2
 
 | Command | Description |
 |---------|-------------|
+| `/status` | Show current session ID, turn count, and token usage |
 | `/run` | Run the current file in RStudio immediately (requires `tyla::start()` in RStudio) |
 | `/new` | Start a new session (previous session is summarized) |
-| `/status` | Show current session ID, turn count, and token usage |
-| `/mode` | Show the active workflow mode |
-| `/default` | Switch to default agent mode |
-| `/solver` | Switch to solver mode (agentic edit pipeline) |
-| `/tutor-socratic` | Switch to Socratic tutor mode (no file writes) |
-| `/tutor-guide` | Switch to tutor-guide mode (guided walkthrough) |
+| `/rollback [n]` | Roll back the current session to after turn `n` (default: last turn) |
 | `/rollback list` | List turns in the current session |
-| `/rollback <n>` | Roll back the current session to after turn `n` |
 | `/rollback session list` | List recent saved sessions |
 | `/rollback session <id> <n>` | Roll back a saved session to after turn `n` |
+| `/policy` | Show the policy rules for the current workflow mode |
+| `/stress-test` | Run automated red-teaming against the current mode |
+| `/help` | List available commands |
+| `/exit` | Exit the REPL |
 
 ---
 
@@ -191,21 +190,23 @@ The CLI follows Clean Architecture with dependency flowing inward:
 
 ```
 tyla/src/
-├── domain/           # Entities, interfaces, value objects (no external deps)
+├── domain/           # Entities, interfaces, lib, policies, repositories, types, values (no external deps)
 ├── application/
 │   ├── orchestration/  # Orchestrator, ReAct loop, ToolRegistry
 │   ├── ports/          # R-bridge port interface
 │   ├── prompts/        # Prompt templates & section builders
-│   ├── services/       # AgentService, GuardAgent, SlashCommandRouter, DiffEngine, ...
+│   ├── services/       # AgentService, SlashCommandRouter, DiffEngine, ModeManager, IntentRouter, ...
 │   ├── tools/          # FileScanTool, FileReadTool, FileEditTool, PdfReadTool,
 │   │                   # RExecTool, RInstallTool, RRenderTool, LibraryScanTool
-│   └── use-cases/      # execute-ask, execute-instruction, execute-solver, execute-tutor
+│   └── use-cases/      # execute-ask, execute-instruction, execute-tutor, execute-run, execute-install
 ├── infrastructure/
-│   ├── api/          # LLM gateway (OpenAI / Anthropic / Azure / Gemini / Ollama)
+│   ├── api/          # LLM gateway (llm/) + guard/, tutor/, logging/, shared/ helpers
+│   │                 # Providers: OpenAI / Anthropic / Azure / Gemini / Ollama
 │   ├── bootstrap/    # AgentFactory (wires all deps together)
-│   ├── config/       # Paths, settings, constants, policy-loader
+│   ├── config/       # Paths, settings, constants, policy-loader, profile
 │   ├── filesystem/   # File scanner, finder, resolver, plugin-loader
-│   ├── persistence/  # Session, knowledge, guard-log repositories
+│   ├── pdf/          # PDF text extractor
+│   ├── persistence/  # Session + knowledge repositories
 │   └── r-adapter/    # R path detection, script runner, package installer, library scanner
 ├── cli/              # Commander-based one-shot CLI
 │   ├── index.ts      # CLI composition root (startCLI)
@@ -215,6 +216,7 @@ tyla/src/
 │   ├── index.tsx     # TUI entry point (startTUI)
 │   ├── controller/   # AppController (React/Ink state machine)
 │   └── presentation/ # App, ChatHistory, DiffReview, StatusBar, Footer, ...
+├── tutors/           # Per-mode prompt definitions (default, solver, tutor-guide, tutor-socratic)
 ├── composition/      # createAgentController factory
 └── shared/           # Cross-cutting types, utils, i18n, view-models
 ```
@@ -263,16 +265,18 @@ bun run test -- path/to/test.test.ts
 
 ```
 project-root/
-├── tyla/         # TypeScript CLI (this tool)
-├── app/          # Ruby backend API (Clean Architecture, Roda)
-├── workers/      # Background LLM workers (Redis + SQS)
-├── config/       # Shared secrets / environment config
-├── db/           # Database migrations
-├── spec/         # RSpec tests
-└── directives/   # SOP documents for agent behavior
+├── tyla/           # TypeScript CLI (this tool)
+├── tyla-r/         # R package — RStudio-side bridge (tyla::start())
+├── test-r-project/ # Sample R project used for manual/e2e testing
+├── config/         # Shared secrets / environment config
+├── db/             # Database migrations
+├── docs/           # Architecture notes, API and usage docs
+├── plans/          # Planning documents (architecture plans, gap analyses)
+├── skills/         # Agent skill definitions
+├── config.ru, Gemfile, Rakefile   # Optional Ruby backend (Roda) harness
 ```
 
-The Ruby backend and workers are optional — the CLI talks directly to LLM APIs by default.
+The Ruby backend is optional — the CLI talks directly to LLM APIs by default.
 
 ---
 

@@ -1,9 +1,9 @@
-Package: mindy
-Title: RStudio Bridge for Mindy CLI
+Package: tyla
+Title: RStudio Bridge for Tyla CLI
 Version: 0.1.0
 Authors@R:
     person("Mindy", , , "mindy@example.com", role = c("aut", "cre"))
-Description: Enables the Mindy CLI to execute R code in the current RStudio
+Description: Enables the Tyla CLI to execute R code in the current RStudio
     session. Uses a file-based communication mechanism where the CLI writes
     commands and R executes them via rstudioapi::sendToConsole().
 License: MIT + file LICENSE

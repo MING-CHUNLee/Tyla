@@ -1,14 +1,14 @@
 #' File-based Command Watcher
 #'
-#' Watches for command files written by the Mindy CLI and executes them
+#' Watches for command files written by the Tyla CLI and executes them
 #' in the RStudio console using rstudioapi.
 #'
 #' @name watcher
 NULL
 
-# Get the mindy commands directory
-get_mindy_dir <- function() {
-    dir <- file.path(Sys.getenv("HOME"), ".mindy", "commands")
+# Get the tyla commands directory
+get_tyla_dir <- function() {
+    dir <- file.path(Sys.getenv("HOME"), ".tyla", "commands")
     if (!dir.exists(dir)) {
         dir.create(dir, recursive = TRUE)
     }
@@ -17,15 +17,15 @@ get_mindy_dir <- function() {
 
 # File paths
 get_pending_file <- function() {
-    file.path(get_mindy_dir(), "pending.json")
+    file.path(get_tyla_dir(), "pending.json")
 }
 
 get_result_file <- function() {
-    file.path(get_mindy_dir(), "result.json")
+    file.path(get_tyla_dir(), "result.json")
 }
 
 get_lock_file <- function() {
-    file.path(get_mindy_dir(), ".lock")
+    file.path(get_tyla_dir(), ".lock")
 }
 
 #' Start the Command Listener
@@ -41,9 +41,9 @@ get_lock_file <- function() {
 #' @examples
 #' \dontrun{
 #' # Start listening for CLI commands
-#' mindy::start_listener()
+#' tyla::start_listener()
 #'
-#' # Now in terminal: mindy run
+#' # Now in terminal: tyla  (then /run inside the TUI)
 #' }
 #'
 #' @export
@@ -55,18 +55,18 @@ start_listener <- function(interval = 0.5, quiet = FALSE) {
     }
 
     # Check if already running
-    if (isTRUE(.mindy_env$listener_running)) {
+    if (isTRUE(.tyla_env$listener_running)) {
         if (!quiet) message("Listener is already running")
         return(invisible(TRUE))
     }
 
-    .mindy_env$listener_running <- TRUE
-    .mindy_env$listener_interval <- interval
+    .tyla_env$listener_running <- TRUE
+    .tyla_env$listener_interval <- interval
 
     if (!quiet) {
-        message("Mindy listener started")
-        message("Watching: ", get_mindy_dir())
-        message("Use mindy::stop_listener() to stop")
+        message("Tyla listener started")
+        message("Watching: ", get_tyla_dir())
+        message("Use tyla::stop_listener() to stop")
     }
 
     # Create lock file to signal CLI that listener is active
@@ -88,7 +88,7 @@ start_listener <- function(interval = 0.5, quiet = FALSE) {
 #'
 #' @export
 stop_listener <- function(quiet = FALSE) {
-    .mindy_env$listener_running <- FALSE
+    .tyla_env$listener_running <- FALSE
 
     # Remove lock file
     lock_file <- get_lock_file()
@@ -97,7 +97,7 @@ stop_listener <- function(quiet = FALSE) {
     }
 
     if (!quiet) {
-        message("Mindy listener stopped")
+        message("Tyla listener stopped")
     }
 
     invisible(TRUE)
@@ -109,12 +109,12 @@ stop_listener <- function(quiet = FALSE) {
 #'
 #' @export
 is_listener_running <- function() {
-    isTRUE(.mindy_env$listener_running)
+    isTRUE(.tyla_env$listener_running)
 }
 
 # Internal: Watch for command files
 watch_for_commands <- function(interval) {
-    if (!isTRUE(.mindy_env$listener_running)) {
+    if (!isTRUE(.tyla_env$listener_running)) {
         return(invisible(NULL))
     }
 

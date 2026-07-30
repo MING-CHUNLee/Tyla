@@ -1,6 +1,6 @@
-# mindy
+# tyla
 
-RStudio Bridge for Mindy CLI - Execute R code in your RStudio session via command line.
+RStudio Bridge for the Tyla CLI - Execute R code in your RStudio session via the command line.
 
 ## How It Works
 
@@ -8,9 +8,9 @@ RStudio Bridge for Mindy CLI - Execute R code in your RStudio session via comman
 ┌─────────────────────────────────────────┐
 │           RStudio                        │
 │                                          │
-│  1. Run: mindy::start()                  │
+│  1. Run: tyla::start()                   │
 │         ↓                                │
-│  2. Listener watches ~/.mindy/commands/  │
+│  2. Listener watches ~/.tyla/commands/   │
 │         ↓                                │
 │  3. Executes code via sendToConsole()    │
 │                                          │
@@ -22,11 +22,11 @@ RStudio Bridge for Mindy CLI - Execute R code in your RStudio session via comman
 ┌─────────────────────────────────────────┐
 │           Terminal                       │
 │                                          │
-│  $ mindy run                             │
-│    → runs current file in RStudio        │
+│  $ tyla            (open the TUI)         │
+│    → /run runs the current RStudio file  │
 │                                          │
-│  $ mindy run "1+1"                       │
-│    → executes code in RStudio console    │
+│  $ tyla agent "..."                      │
+│    → edits files via the agent workflow  │
 │                                          │
 └─────────────────────────────────────────┘
 ```
@@ -38,7 +38,7 @@ RStudio Bridge for Mindy CLI - Execute R code in your RStudio session via comman
 install.packages(c("jsonlite", "later", "uuid"))
 
 # Install from local source
-install.packages("path/to/mindy-r", repos = NULL, type = "source")
+install.packages("path/to/tyla-r", repos = NULL, type = "source")
 ```
 
 ## Quick Start
@@ -46,64 +46,51 @@ install.packages("path/to/mindy-r", repos = NULL, type = "source")
 ### Step 1: Start the Listener in RStudio
 
 ```r
-library(mindy)
-mindy::start()
+library(tyla)
+tyla::start()
 ```
 
 You'll see:
 ```
-Mindy listener started
-Watching: ~/.mindy/commands
-Use mindy::stop() to stop
+Tyla listener started
+Watching: ~/.tyla/commands
+Use tyla::stop() to stop
 ```
 
-### Step 2: Run from Terminal
+### Step 2: Use the CLI from the Terminal
 
 ```bash
-# Run the current file open in RStudio (most common use case)
-mindy run
+# Open the interactive TUI; /run executes the file open in RStudio
+tyla
 
-# Run specific R code
-mindy run "summary(mtcars)"
-
-# Run a specific R file
-mindy run script.R
+# Or run the agent workflow directly
+tyla agent "Add error handling to the data loading functions"
 ```
-
-## CLI Commands
-
-| Command | Description |
-|---------|-------------|
-| `mindy run` | Run the current file open in RStudio |
-| `mindy run "code"` | Execute R code |
-| `mindy run file.R` | Execute an R file |
-| `mindy run --yes` | Skip confirmation prompt |
-| `mindy run --timeout 60000` | Set timeout (ms) |
 
 ## R Functions
 
 | Function | Description |
 |----------|-------------|
-| `mindy::start()` | Start the listener |
-| `mindy::stop()` | Stop the listener |
-| `mindy::status()` | Show listener status |
+| `tyla::start()` | Start the listener |
+| `tyla::stop()` | Stop the listener |
+| `tyla::status()` | Show listener status |
 
 ## RStudio Addins
 
 The package also provides RStudio Addins:
 
-- **Start Mindy** - Start the listener
-- **Stop Mindy** - Stop the listener
-- **Mindy Status** - Show status
+- **Start Tyla Server** - Start the listener
+- **Stop Tyla Server** - Stop the listener
+- **Tyla Server Status** - Show status
 
-Access via: RStudio menu → Addins → Mindy
+Access via: RStudio menu → Addins → Tyla
 
 ## How Communication Works
 
-1. CLI writes command to `~/.mindy/commands/pending.json`
+1. CLI writes command to `~/.tyla/commands/pending.json`
 2. R listener detects the file (polling every 0.5s)
 3. R executes the command via `rstudioapi::sendToConsole()`
-4. R writes result to `~/.mindy/commands/result.json`
+4. R writes result to `~/.tyla/commands/result.json`
 5. CLI reads the result and displays it
 
 ## License

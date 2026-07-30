@@ -4,11 +4,13 @@
 > **frontend's view** of the contract; the canonical, field-level endpoint specs live in
 > the backend repo and are linked per endpoint. Where the two disagree, the backend docs win.
 >
-> **Status (2026-06-03):** the live pipeline is **`guard_checks` → `tutor_chats`**. The
-> agentic additions — `file_context` (request) and `actions[]` (response) — are the
-> **target** from [`plans/2026-06-03-agentic-tutor-react-pipeline.md`](../plans/2026-06-03-agentic-tutor-react-pipeline.md)
-> (frontend) and `Tyla-api/plans/2026-06-03-agentic-tutor-backend.md` (backend). Parts not
-> yet shipped are marked **TARGET**.
+> **Status (2026-07-25):** the live pipeline is **`guard_checks` → `tutor_chats`**, and the
+> agentic additions have **shipped** on the frontend: `file_context` + `workspace_overview` +
+> `session_turns` (request) and `actions[]` (response) are all live, along with the B3
+> continuation loop that resolves `load_file` actions
+> ([`plans/2026-06-03-agentic-tutor-react-pipeline.md`](../plans/2026-06-03-agentic-tutor-react-pipeline.md);
+> backend `Tyla-api/plans/2026-06-03-agentic-tutor-backend.md`). A few fields still depend on
+> the matching backend workstream landing — those remain marked **TARGET (backend)** below.
 >
 > **Superseded:** the previous `/resolve` + `/edit` Gemini pipeline (port 9090) is retired.
 > The backend is now a guard + tutor service; see the git history of this file for the old contract.
@@ -110,6 +112,17 @@ type ApiStatus = 'done' | 'forbidden' | 'error' | 'unavailable';
 `error` is the frontend's bucket for any non-2xx or unparseable body; on the wire those
 use the shared error envelope `{ status, message, errors }`.
 
+**Tutor-only HTTP statuses.** `tutor_chats` maps two provider HTTP codes to distinct
+frontend results (not part of the body `status` enum — they come from the HTTP layer, see
+[`tutor-chat-gateway.ts`](../tyla/src/infrastructure/api/tutor/tutor-chat-gateway.ts)):
+
+| HTTP | Frontend result | Behaviour |
+|------|-----------------|-----------|
+| `429` | `rate_limited` (carries `retry_after`, `limit_dimension`) | show back-off message; **wait & retry** — never open a new conversation |
+| `413` | `input_too_large` (carries `max_input_tokens`) | tell the student to **start a new conversation**; never retry (same body re-triggers 413) |
+
+These two are opposites and must stay distinct (plan 2026-06-18 §6 / 2026-06-24 D).
+
 ---
 
 ## 5. Endpoint 1 — `POST /api/v1/guard_checks` (pre-call)
@@ -140,23 +153,33 @@ the `guard_log_id`** from the pre-call against the DB (exists, status ∈ {`done
 `unavailable`}, prompt matches) — a no-LLM check that replaces re-running the guard, so a
 client can't skip `guard_checks` to bypass safety.
 
-**Request body:** `{ course_id, project_id, student_id, guard_log_id, prompt, history, file_context? }`
-- `guard_log_id` — **TARGET** — the `log_id` from the `guard_checks` pre-call; the backend
-  verifies it instead of re-running the guard.
-- `file_context` — **TARGET** — pre-assembled, token-budgeted workspace text built by the
-  frontend (`buildFileContext()`), since the backend can't reach the local filesystem.
+**Request body:** `{ course_id, project_id, student_id, guard_log_id, prompt, history, session_turns?, file_context?, workspace_overview? }`
+- `guard_log_id` — the `log_id` from the `guard_checks` pre-call; the backend verifies it
+  (a DB check) instead of re-running the guard. **TARGET (backend)** — verification lands
+  with Workstream A; the frontend already sends it every turn.
+- `file_context` — line-numbered contents of files actually loaded this turn (`@`-mention or
+  a `load_file` continuation), token-budgeted by the frontend since the backend can't reach
+  the local filesystem. A flat sequence of `### <path>` blocks (plan 2026-06-14 §C).
+- `workspace_overview` — the cheap file-listing manifest (names only, no contents/line
+  numbers) that lets the `load_file` loop know which files it may request (plan 2026-06-12 §4).
+  Its presence is also the backend's contract-version marker.
+- `session_turns` — Option C rich, uncompressed turns; when present the backend ignores
+  `history` and runs its own serializer + rolling summary. `history` is still sent for
+  backward compatibility during the switchover (plan 2026-06-15 §2).
 
-**Response body:** `{ log_id, status, content, actions?, usage }`
-- `actions` — **TARGET** — structured suggestions the TUI executes behind approval (§7).
+**Response body:** `{ log_id, status, content, actions?, usage, warnings? }`
+- `actions` — structured suggestions the TUI executes behind approval (§7). Live.
+- `warnings` — backend trim notices (e.g. `file_context_dropped`), surfaced to the student.
 
-> **Canonical spec:** `Tyla-api/doc/api_tutor_chats.md`. The `status` enum + `usage` shape
-> are live; `file_context` and `actions[]` are TARGET (Workstream B).
+> **Canonical spec:** `Tyla-api/doc/api_tutor_chats.md`. `file_context`, `workspace_overview`,
+> `actions[]`, and the continuation loop are live on the frontend; `guard_log_id` verification
+> is TARGET (backend Workstream A).
 
 Frontend component: [`TutorChatGateway`](../tyla/src/infrastructure/api/tutor/tutor-chat-gateway.ts).
 
 ---
 
-## 7. Actions & the approval gate (TARGET)
+## 7. Actions & the approval gate
 
 When `tutor_chats` returns `actions[]`, [`ExecuteTutorUseCase`](../tyla/src/application/use-cases/execute-tutor-use-case.ts)
 renders `content`, then dispatches each action:
@@ -208,7 +231,7 @@ tutor (`tutor_chats.usage`). The frontend tracks them separately (`guardUsage` /
 |---------|------|
 | Tutor pipeline (guard → tutor → actions) | [execute-tutor-use-case.ts](../tyla/src/application/use-cases/execute-tutor-use-case.ts) |
 | Tutor gateway (`/tutor_chats`) | [tutor-chat-gateway.ts](../tyla/src/infrastructure/api/tutor/tutor-chat-gateway.ts) |
-| Guard gateway (`/guard_checks`) | `infrastructure/api/guard/guard-check-gateway.ts` *(TARGET — to be added)* |
+| Guard gateway (`/guard_checks`) | [guard-check-gateway.ts](../tyla/src/infrastructure/api/guard/guard-check-gateway.ts) |
 | Edit staging + write | `EditStagingService`, `FileEditTool` (single `fs.writeFileSync` site) |
 | Tools (`file_read` / `pdf_read` / `r_exec` / `file_scan`) | `application/orchestration/tool-registry.ts` |
 

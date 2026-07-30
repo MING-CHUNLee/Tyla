@@ -1,0 +1,14 @@
+Name: Start Tyla Server
+Description: Start the Tyla API server to enable CLI integration
+Binding: start_server_addin
+Interactive: false
+
+Name: Stop Tyla Server
+Description: Stop the running Tyla API server
+Binding: stop_server_addin
+Interactive: false
+
+Name: Tyla Server Status
+Description: Show the current Tyla server status
+Binding: server_status_addin
+Interactive: false

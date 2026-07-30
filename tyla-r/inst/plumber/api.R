@@ -1,12 +1,12 @@
-#* Mindy Plumber API
+#* Tyla Plumber API
 #*
-#* API endpoints for the Mindy CLI to communicate with RStudio.
+#* API endpoints for the Tyla CLI to communicate with RStudio.
 #*
-#* @apiTitle Mindy R Bridge API
+#* @apiTitle Tyla R Bridge API
 #* @apiDescription Execute R code in RStudio session via HTTP API
 
 # Load package functions
-library(mindy)
+library(tyla)
 
 #* Enable CORS for all endpoints
 #* @filter cors
@@ -27,7 +27,7 @@ function(req, res) {
 #* @get /status
 #* @serializer json
 function() {
-    status <- mindy::server_status()
+    status <- tyla::server_status()
     list(
         running = status$running,
         sessionId = as.character(status$session_id),
@@ -55,7 +55,7 @@ function(req, res, code = "", confirm_required = FALSE) {
 
     # For now, execute immediately (confirmation handled client-side)
     tryCatch({
-        result <- mindy::execute_code(code, id = id)
+        result <- tyla::execute_code(code, id = id)
 
         list(
             id = result$id,
@@ -79,7 +79,7 @@ function(req, res, code = "", confirm_required = FALSE) {
 #* @param id:character The execution ID
 #* @serializer json
 function(id, res) {
-    result <- mindy::get_result(id)
+    result <- tyla::get_result(id)
 
     if (is.null(result)) {
         res$status <- 404
@@ -104,7 +104,7 @@ function(id, res) {
 #* @param approved:logical Whether the execution is approved
 #* @serializer json
 function(id, req, res, approved = FALSE) {
-    result <- mindy::get_result(id)
+    result <- tyla::get_result(id)
 
     if (is.null(result)) {
         res$status <- 404
@@ -125,7 +125,7 @@ function(id, req, res, approved = FALSE) {
 
     if (approved) {
         # Execute the code
-        result <- mindy::execute_code(result$code, id = id)
+        result <- tyla::execute_code(result$code, id = id)
         list(
             id = result$id,
             status = result$status,
@@ -157,8 +157,8 @@ function() {
 #* @serializer json
 function() {
     list(
-        name = "Mindy R Bridge API",
-        version = as.character(packageVersion("mindy")),
+        name = "Tyla R Bridge API",
+        version = as.character(packageVersion("tyla")),
         endpoints = list(
             "GET /status" = "Get server status",
             "POST /execute" = "Execute R code",

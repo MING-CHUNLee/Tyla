@@ -16,7 +16,7 @@ Run this in your R console:
 
 ```r
 # Install from GitHub
-remotes::install_github("MING-CHUNLee/MindyRtd-CLI", subdir = "mindy-r")
+remotes::install_github("MING-CHUNLee/MindyRtd-CLI", subdir = "tyla-r")
 ```
 
 ## Step 2: Install the CLI

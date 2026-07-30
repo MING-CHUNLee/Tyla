@@ -1,14 +1,14 @@
 #' RStudio Addins
 #'
-#' RStudio Addin functions for the Mindy package.
+#' RStudio Addin functions for the Tyla package.
 #'
 #' @name addins
 NULL
 
-#' Start Mindy Server Addin
+#' Start Tyla Server Addin
 #'
-#' RStudio Addin to start the Mindy API server.
-#' This function is called when the user clicks the "Start Mindy Server" addin.
+#' RStudio Addin to start the Tyla API server.
+#' This function is called when the user clicks the "Start Tyla Server" addin.
 #'
 #' @return Invisibly returns NULL.
 start_server_addin <- function() {
@@ -18,14 +18,14 @@ start_server_addin <- function() {
     if (status$running) {
         if (requireNamespace("rstudioapi", quietly = TRUE)) {
             rstudioapi::showDialog(
-                title = "Mindy Server",
+                title = "Tyla Server",
                 message = paste0(
                     "Server is already running on port ", status$port, "\n\n",
                     "Uptime: ", round(status$uptime, 1), " seconds"
                 )
             )
         } else {
-            message("Mindy server is already running on port ", status$port)
+            message("Tyla server is already running on port ", status$port)
         }
         return(invisible(NULL))
     }
@@ -36,11 +36,11 @@ start_server_addin <- function() {
 
         if (requireNamespace("rstudioapi", quietly = TRUE)) {
             rstudioapi::showDialog(
-                title = "Mindy Server Started",
+                title = "Tyla Server Started",
                 message = paste0(
-                    "Mindy API server is now running!\n\n",
-                    "URL: http://localhost:", .mindy_env$port, "\n\n",
-                    "You can now use 'mindy run' from the terminal."
+                    "Tyla API server is now running!\n\n",
+                    "URL: http://localhost:", .tyla_env$port, "\n\n",
+                    "You can now use 'tyla' from the terminal."
                 )
             )
         }
@@ -58,9 +58,9 @@ start_server_addin <- function() {
     invisible(NULL)
 }
 
-#' Stop Mindy Server Addin
+#' Stop Tyla Server Addin
 #'
-#' RStudio Addin to stop the Mindy API server.
+#' RStudio Addin to stop the Tyla API server.
 #'
 #' @return Invisibly returns NULL.
 stop_server_addin <- function() {
@@ -69,11 +69,11 @@ stop_server_addin <- function() {
     if (!status$running) {
         if (requireNamespace("rstudioapi", quietly = TRUE)) {
             rstudioapi::showDialog(
-                title = "Mindy Server",
+                title = "Tyla Server",
                 message = "No server is currently running."
             )
         } else {
-            message("No Mindy server is running")
+            message("No Tyla server is running")
         }
         return(invisible(NULL))
     }
@@ -82,15 +82,15 @@ stop_server_addin <- function() {
 
     if (requireNamespace("rstudioapi", quietly = TRUE)) {
         rstudioapi::showDialog(
-            title = "Mindy Server Stopped",
-            message = "The Mindy API server has been stopped."
+            title = "Tyla Server Stopped",
+            message = "The Tyla API server has been stopped."
         )
     }
 
     invisible(NULL)
 }
 
-#' Show Mindy Server Status Addin
+#' Show Tyla Server Status Addin
 #'
 #' RStudio Addin to show the current server status.
 #'
@@ -101,7 +101,7 @@ server_status_addin <- function() {
     if (requireNamespace("rstudioapi", quietly = TRUE)) {
         if (status$running) {
             rstudioapi::showDialog(
-                title = "Mindy Server Status",
+                title = "Tyla Server Status",
                 message = paste0(
                     "Status: Running\n",
                     "Port: ", status$port, "\n",
@@ -112,8 +112,8 @@ server_status_addin <- function() {
             )
         } else {
             rstudioapi::showDialog(
-                title = "Mindy Server Status",
-                message = "Status: Not Running\n\nClick 'Start Mindy Server' to start."
+                title = "Tyla Server Status",
+                message = "Status: Not Running\n\nClick 'Start Tyla Server' to start."
             )
         }
     } else {

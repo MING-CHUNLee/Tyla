@@ -1,21 +1,21 @@
-#' Mindy Server Management
+#' Tyla Server Management
 #'
-#' Functions to start and stop the Mindy listener.
+#' Functions to start and stop the Tyla listener.
 #' The listener watches for commands from the CLI and executes them in RStudio.
 #'
 #' @name server
 NULL
 
 # Package-level environment for storing state
-.mindy_env <- new.env(parent = emptyenv())
-.mindy_env$listener_running <- FALSE
-.mindy_env$listener_interval <- 0.5
-.mindy_env$start_time <- NULL
+.tyla_env <- new.env(parent = emptyenv())
+.tyla_env$listener_running <- FALSE
+.tyla_env$listener_interval <- 0.5
+.tyla_env$start_time <- NULL
 
-#' Start Mindy
+#' Start Tyla
 #'
-#' Starts the Mindy listener that watches for CLI commands.
-#' This is the main entry point - just run mindy::start() in RStudio.
+#' Starts the Tyla listener that watches for CLI commands.
+#' This is the main entry point - just run tyla::start() in RStudio.
 #'
 #' @param interval Numeric. Polling interval in seconds. Default is 0.5.
 #' @param quiet Logical. If TRUE, suppress startup messages.
@@ -24,15 +24,15 @@ NULL
 #'
 #' @examples
 #' \dontrun{
-#' # Start Mindy in RStudio
-#' mindy::start()
+#' # Start Tyla in RStudio
+#' tyla::start()
 #'
 #' # Now in terminal:
-#' # mindy run          <- runs current file
-#' # mindy run "1+1"    <- runs code
+#' # tyla            <- opens the interactive TUI (/run runs the current file)
+#' # tyla agent ...  <- agentic edit workflow
 #'
 #' # Stop when done
-#' mindy::stop()
+#' tyla::stop()
 #' }
 #'
 #' @export
@@ -40,9 +40,9 @@ start <- function(interval = 0.5, quiet = FALSE) {
     start_listener(interval = interval, quiet = quiet)
 }
 
-#' Stop Mindy
+#' Stop Tyla
 #'
-#' Stops the Mindy listener.
+#' Stops the Tyla listener.
 #'
 #' @param quiet Logical. If TRUE, suppress messages.
 #'
@@ -53,39 +53,39 @@ stop <- function(quiet = FALSE) {
     stop_listener(quiet = quiet)
 }
 
-#' Get Mindy Status
+#' Get Tyla Status
 #'
-#' Returns the current status of the Mindy listener.
+#' Returns the current status of the Tyla listener.
 #'
 #' @return A list with status information.
 #'
 #' @export
 status <- function() {
-    running <- isTRUE(.mindy_env$listener_running)
+    running <- isTRUE(.tyla_env$listener_running)
 
     status <- list(
         running = running,
-        start_time = if (running) .mindy_env$start_time else NA,
-        uptime = if (running && !is.null(.mindy_env$start_time))
-            as.numeric(difftime(Sys.time(), .mindy_env$start_time, units = "secs")) else NA,
+        start_time = if (running) .tyla_env$start_time else NA,
+        uptime = if (running && !is.null(.tyla_env$start_time))
+            as.numeric(difftime(Sys.time(), .tyla_env$start_time, units = "secs")) else NA,
         r_version = paste(R.version$major, R.version$minor, sep = "."),
         session_id = Sys.getpid(),
-        commands_dir = get_mindy_dir()
+        commands_dir = get_tyla_dir()
     )
 
-    class(status) <- c("mindy_status", "list")
+    class(status) <- c("tyla_status", "list")
     status
 }
 
-#' Print method for mindy_status
+#' Print method for tyla_status
 #'
-#' @param x A mindy_status object
+#' @param x A tyla_status object
 #' @param ... Additional arguments (ignored)
 #'
 #' @export
-print.mindy_status <- function(x, ...) {
-    cat("Mindy Status\n")
-    cat("------------\n")
+print.tyla_status <- function(x, ...) {
+    cat("Tyla Status\n")
+    cat("-----------\n")
     cat("Listener:   ", if (x$running) "Running" else "Stopped", "\n")
     if (x$running) {
         cat("Uptime:     ", round(x$uptime, 1), " seconds\n")

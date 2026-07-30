@@ -1,102 +1,136 @@
 # Usage Guide
 
-## ⚡ Quick Start (The "Active Session" Workflow)
+Tyla is an agentic CLI. Running `tyla` with no arguments opens the interactive
+TUI; the sub-commands below (`agent`, `ask`, `knowledge`) are the one-shot CLI.
 
-To execute code or analyze the current project, you must connect the CLI to RStudio.
+## ⚡ Quick Start (the "Active Session" workflow)
 
-**1️⃣ In RStudio Console:**
-Start the listener service. This allows RStudio to receive commands from the CLI.
+To run or edit R code against a live RStudio session, connect the CLI to RStudio.
+
+**1️⃣ In the RStudio console** — start the listener so RStudio can receive commands:
 
 ```r
-Tyla::start()
+tyla::start()
 ```
 
-**2️⃣ In Terminal:**
-Run any Tyla command. For example, to scan your project:
+**2️⃣ In your terminal** — launch Tyla from your R project directory:
 
 ```bash
-mrc scan
+tyla                      # interactive TUI (default)
+tyla agent "Add error handling to the data loading functions"
 ```
+
+> Only `/run` and the R tools (execute / install / library scan) require the
+> RStudio listener. Plain `ask` and file edits work without it.
 
 ---
 
 ## 📖 Command Reference
 
-### `scan` - Analyze File Structure
-Scans the current directory for R-related files (`.R`, `.Rmd`, `.Rproj`, etc.).
+The CLI exposes three sub-commands. Everything else (running a file, scanning the
+project, installing packages) is either a TUI slash command or an agent tool the
+LLM invokes for you during `agent` mode — not a stand-alone CLI command.
+
+### `tyla` — Interactive TUI (default)
+
+Launches the full-screen Ink TUI. Type instructions or slash commands directly.
 
 ```bash
-mrc scan
-mrc scan --json            # Output as JSON
-mrc scan --no-recursive    # Top-level only
+tyla                                  # open the TUI in the current directory
+tyla --tutor                          # start in tutor-guide mode
+tyla --assignment ./assignments/HW2   # tutor-guide mode for a specific assignment
 ```
 
-### `library` - Inspect Installed Packages
-Connects to R to list installed packages. **Requires `Tyla::start()`**.
+Common slash commands inside the TUI:
+
+| Command | Description |
+|---------|-------------|
+| `/status` | Show session ID, turn count, and token usage |
+| `/run` | Run the current RStudio file immediately (needs `tyla::start()`) |
+| `/new` | Start a new session (previous session is summarized) |
+| `/rollback [n]` | Roll back the current session to after turn `n` |
+| `/rollback list` | List turns in the current session |
+| `/rollback session list` | List recent saved sessions |
+| `/rollback session <id> <n>` | Roll back a saved session to after turn `n` |
+| `/policy` | Show the policy rules for the current workflow mode |
+| `/stress-test` | Run automated red-teaming against the current mode |
+| `/help` | List available commands |
+| `/exit` | Exit the REPL |
+
+The workflow mode (`default`, `solver`, `tutor-socratic`, `tutor-guide`) is set
+via the `workflowMode` field in `.tyla/settings.json`, not by a slash command.
+
+### `tyla agent` — AI-powered file editor
+
+Runs the autonomous agent workflow to edit project files from a natural-language
+instruction. Files are scanned and read automatically; every change is presented
+as a diff for your approval before anything is written to disk.
 
 ```bash
-mrc library
-mrc library --filter dplyr # Search for specific package
-mrc library --json
+# One-shot instruction
+tyla agent "Refactor hw11.R to use tidyverse pipes"
+
+# Specify a workspace directory
+tyla agent "Fix the ggplot theme" --directory ./analysis
+
+# Resume the last saved session (agent remembers previous changes)
+tyla agent "Now add unit tests" --resume
+
+# Resume a specific session by ID
+tyla agent "Continue the refactor" --session <id>
+
+# Force a new session (ignore the last one)
+tyla agent "Start fresh" --new
 ```
 
-### `context` - Generate LLM Context
-Builds a comprehensive system prompt combining file structure + installed packages. Useful for pasting into ChatGPT/Claude.
+Flags: `-d, --directory <path>`, `--resume`, `--session <id>`, `--new`.
+
+The agent's R capabilities (execute a script, install a package, scan installed
+libraries) run as tools during the ReAct loop and require `tyla::start()`.
+
+### `tyla ask` — Q&A without editing
+
+Conversational Q&A with streaming output. Reads relevant files automatically to
+answer questions about your project; never writes to disk. Shares session memory
+with `agent`.
 
 ```bash
-mrc context
-mrc context --copy         # Copy to clipboard
+tyla ask "What does the load_data function do?"
+tyla ask "Why is my ggplot not rendering correctly?"
 ```
 
-### `run` - Execute Code in RStudio
-Directly executes R code or files in your active RStudio session. **Requires `Tyla::start()`**.
+### `tyla knowledge` — cross-session memory
+
+Store project-specific notes and conventions that the agent recalls automatically.
+Entries live at `.tyla/knowledge.json`.
 
 ```bash
-# Run the file currently open in RStudio editor
-mrc run
-
-# Run a specific file
-mrc run analysis.R
-
-# Execute inline code
-mrc run "head(mtcars)"
-
-# Render an RMarkdown file
-mrc run report.Rmd
+tyla knowledge add "ggplot theme" "Always use theme_minimal()" --tags ggplot2,style
+tyla knowledge add "data conventions"      # interactive: omit content to be prompted
+tyla knowledge list
+tyla knowledge search "ggplot"
+tyla knowledge remove <id>
 ```
 
-### `install` - Package Installation
-Installs R packages with multi-layered safety checks (CRAN status, trust metrics, dependencies, etc.) in your active RStudio session. **Requires `Tyla::start()`**.
+---
 
-```bash
-# Install a package from CRAN
-mrc install dplyr
+## Configuration
 
-# Install multiple packages
-mrc install dplyr ggplot2
+Set your LLM credentials in a `.env` file in your project directory (the first
+provider key found is used automatically):
 
-# Install from GitHub
-mrc install tidyverse/dplyr --source github
+```env
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+GEMINI_API_KEY=...
+AZURE_OPENAI_API_KEY=...
+OLLAMA_HOST=http://localhost:11434
 
-# Skip confirmation prompt
-mrc install dplyr --yes
+# Optional overrides
+LLM_PROVIDER=anthropic
+LLM_MODEL=claude-3-5-sonnet-20241022
+LLM_MAX_TOKENS=8192
 ```
 
-### `agent` - AI-Powered File Editor
-Runs the autonomous Agent workflow to edit project files based on natural language instructions.
-
-```bash
-# Ask the agent to perform a coding task
-mrc agent "Add error handling to the data loading functions"
-
-# Specify a directory
-mrc agent "Add comments to logger" -d ./src
-```
-The agent operates in three phases: resolving relevant files from the workspace, generating modifications via LLM, and presenting a diff review for interactive confirmation.
-
-### `tui` - Interactive Mode
-Launches the interactive Terminal User Interface. Equivalent to running `mrc` without arguments.
-
-```bash
-mrc tui
-```
+Project data (sessions, knowledge, settings) is stored under `.tyla/` in the
+working directory; plugin tools are global at `~/.tyla/plugins/`.
